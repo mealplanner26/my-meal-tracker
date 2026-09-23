@@ -910,31 +910,39 @@ function toast(msg, onUndo) {
    5. Copy the day: repeats every slot of a chosen day onto today in one action, not slot by slot.
    ============================================================ */
 
-// ---------- 1. recent foods ----------
-// The last few distinct foods actually logged (any meal slot, any day), newest first. Read from the plan itself, so nothing new has to be stored to make this work.
-function recentFoodIds(limit) {
-  const byId = {}; state.meals.forEach(m => { byId[m.id] = m; });
-  const seen = new Set(), out = [];
-  const dates = Object.keys(state.plan).filter(d => state.plan[d] && SLOT_IDS.some(s => (state.plan[d][s] || []).length)).sort().reverse();
-  for (const date of dates) {
-    for (const slot of SLOT_IDS) {
-      const ids = (state.plan[date][slot] || []).slice().reverse();
-      for (const mid of ids) {
-        const m = byId[mid];
-        if (!m || m.items.length !== 1) continue;                    // only single-food entries have one clear "this is the food" answer
-        const fid = m.items[0].foodId;
-        if (seen.has(fid)) continue;
-        seen.add(fid); out.push(fid);
-        if (out.length >= limit) return out;
-      }
+// ---------- 1. foods you already know, for THIS meal slot ----------
+// Your own foods (label-entered or scanned by barcode) show up as soon as you have logged them once for this slot.
+// A generic USDA food only joins them once it is genuinely a habit for this slot -- logged often enough, recently enough --
+// so a food you tried once does not crowd out the choice that actually belongs here. Kept strictly per slot: a dinner
+// favorite never appears while you are adding breakfast, and the other way around.
+function usageStatsForSlot(slot) {
+  const today = keyOf(new Date()), map = {}, byId = {}, todayMs = parseKey(today).getTime();
+  state.meals.forEach(m => { byId[m.id] = m; });
+  const bump = (foodId, w) => { const u = map[foodId] || (map[foodId] = { score: 0 }); u.score += w; };
+  for (const [date, day] of Object.entries(state.plan)) {
+    const t = parseKey(date).getTime();
+    if (isNaN(t)) continue;
+    const w = Math.exp(-Math.max(0, todayMs - t) / 864e5 / 60);   // the same recent-counts-more weighting usageStats() uses, just for one slot
+    for (const mid of (day[slot] || [])) {
+      const m = byId[mid];
+      if (m) m.items.forEach(it => bump(it.foodId, w));
     }
   }
-  return out;
+  return map;
+}
+const SLOT_HABIT_SCORE = 1.5;   // a single very recent use already scores close to 1, so this needs at least two recent uses (or more, further back) before a generic food counts as a real habit here
+function slotQuickFoodIds(slot, limit) {
+  const fm = foodMap(), stats = usageStatsForSlot(slot);
+  const rows = Object.entries(stats).filter(([id]) => fm[id])
+    .map(([id, u]) => ({ id, score: u.score, known: !!fm[id].custom }))
+    .filter(r => r.known || r.score >= SLOT_HABIT_SCORE);          // known (your own/scanned) foods need no threshold; a generic food has to earn its place
+  rows.sort((a, b) => b.score - a.score);
+  return rows.slice(0, limit).map(r => r.id);
 }
 function recentFoodsHtml() {
-  const fm = foodMap(), ids = recentFoodIds(8).filter(id => fm[id]);
+  const fm = foodMap(), slot = ui.fa.slot, ids = slotQuickFoodIds(slot, 8).filter(id => fm[id]);
   if (!ids.length) return '';
-  return '<div class="quick-chips" aria-label="Recently logged foods">' + ids.map(id => {
+  return '<div class="quick-chips" aria-label="Your usual foods for ' + esc(SLOT_LABEL(slot)) + '">' + ids.map(id => {
     const f = fm[id];
     return '<button class="chip-btn" data-action="fa-recent" data-id="' + esc(id) + '" aria-label="Add ' + esc(f.name) + '">+ ' + esc(f.name.length > 26 ? f.name.slice(0, 26) + '\u2026' : f.name) + '</button>';
   }).join('') + '</div>';
@@ -1150,13 +1158,12 @@ function faPickHtml() {
     '<p class="muted small" style="margin:8px 0 0">Numbers different from your package? <button class="link" data-action="fa-label">Enter it from its label</button></p></div>';
 }
 function foodAddHtml() {
-  const F = ui.fa, used = !F.q.trim() && !F.pick && !F.form ? topUsedFoods(6) : [];
+  const F = ui.fa;
   const RM = F.replace && state.meals.find(m => m.id === F.replace.mealId);
   const banner = RM ? '<div class="fa-state-note" role="status">Replacing the food in <strong>' + esc(RM.name) + '</strong>' + (F.replace.idx < 0 ? ' (all ' + RM.items.length + ' of its foods become the one you choose)' : '') + '. This changes the meal everywhere it is used. <button class="link" data-action="fa-replace-cancel">Cancel</button></div>' : '';
   return '<div class="foodadd">' + banner + '<label for="faQuery" class="sr-only">Add a food</label>' +
     pinnedStapleHtml() + recentFoodsHtml() +
     '<input id="faQuery" data-fa="q" type="search" autocomplete="off" maxlength="80" placeholder="Add a food: search ' + USDA_FOODS.length.toLocaleString() + ' foods (banana, rice\u2026)" value="' + esc(F.q) + '">' +
-    (used.length ? '<div class="quick-chips" aria-label="Your most-used foods">' + used.map(f => '<button class="chip-btn" data-action="fa-pick" data-id="' + esc(f.id) + '">' + esc(f.name.length > 30 ? f.name.slice(0, 30) + '\u2026' : f.name) + '</button>').join('') + '</div>' : '') +
     (F.form ? faFormHtml() : F.pick ? faPickHtml() : '<div id="faResults">' + (F.q.trim() ? faResultsHtml() : '') + '</div>') + '</div>';
 }
 function faFocusSearch() {
@@ -5386,7 +5393,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.09.23-1';
+const APP_VERSION = '2026.09.23-2';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
