@@ -1033,12 +1033,13 @@ function slotStats() {
 }
 // Which meals belong to a part of the day. Worked out from what you have actually logged, so nothing has to be tagged:
 // a meal you have eaten at breakfast is a breakfast meal (and stays out of the lunch/dinner menu); lunch and dinner share one pool, since a meal
-// you have eaten at either belongs to both; a meal never used anywhere yet is offered everywhere until its first use.
+// you have eaten at either belongs to both. A meal you have never actually planned onto any day sits under "Other meals" everywhere -- reachable,
+// but never presented as a habit it is not yet -- rather than being shown as "usual" for every part of the day just because it is new.
 function slotMealsSplit(slot) {
   const st = slotStats(), scores = {};
   (SLOT_GROUPS[slot] || [slot]).forEach(s => { const b = st.bySlot[s] || {}; Object.entries(b).forEach(([id, sc]) => { scores[id] = (scores[id] || 0) + sc; }); });
   const mine = [], other = [];
-  state.meals.forEach(m => { if (scores[m.id] > 0 || !(st.all[m.id] > 0)) mine.push(m); else other.push(m); });
+  state.meals.forEach(m => { if (scores[m.id] > 0) mine.push(m); else other.push(m); });
   mine.sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0) || a.name.localeCompare(b.name));
   other.sort((a, b) => a.name.localeCompare(b.name));
   return { mine, other };
@@ -5404,7 +5405,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.09.23-5';
+const APP_VERSION = '2026.09.23-6';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
