@@ -936,13 +936,12 @@ function usageStatsForSlot(slot) {
   }
   return map;
 }
-const SLOT_HABIT_SCORE = 1.5;   // a single very recent use already scores close to 1, so this needs at least two recent uses (or more, further back) before a generic food counts as a real habit here
+const SLOT_KNOWN_BONUS = 1;   // a food you added or scanned yourself starts about a day's worth of extra "usualness" ahead of an equally-used generic food, but nothing genuinely frequent is ever hidden outright
 function slotQuickFoodIds(slot, limit) {
   const fm = foodMap(), stats = usageStatsForSlot(slot);
   const rows = Object.entries(stats).filter(([id]) => fm[id])
-    .map(([id, u]) => ({ id, score: u.score, known: !!fm[id].custom }))
-    .filter(r => r.known || r.score >= SLOT_HABIT_SCORE);          // known (your own/scanned) foods need no threshold; a generic food has to earn its place
-  rows.sort((a, b) => b.score - a.score);
+    .map(([id, u]) => ({ id, rank: u.score + (fm[id].custom ? SLOT_KNOWN_BONUS : 0) }));
+  rows.sort((a, b) => b.rank - a.rank);
   return rows.slice(0, limit).map(r => r.id);
 }
 function recentFoodsHtml() {
@@ -5400,7 +5399,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.09.23-3';
+const APP_VERSION = '2026.09.23-4';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
