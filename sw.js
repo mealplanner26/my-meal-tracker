@@ -1,5 +1,5 @@
 /* Service worker: lets the site install and work offline. It only ever caches this site's own files, never your saved data. */
-const VERSION = '2026.09.22-1';
+const VERSION = '2026.09.23-1';
 const CACHE = 'mp-' + VERSION;
 const SHELL = ['./', 'index.html', 'products.json', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'icon-180.png'];
 self.addEventListener('install', e => {

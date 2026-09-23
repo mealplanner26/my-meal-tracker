@@ -24,6 +24,30 @@ What is different from the claude.ai version:
   touching the app itself.
 - It can be installed to a phone's home screen and works offline after the first visit.
 
+## What changed in 2026.09.22-1
+
+Five ways to log a food faster:
+- **Recent foods** and **pinned staples**: one-tap chips above the food search box.
+- **Log again**: a button on any Day-tab entry to log a second helping instantly.
+- **One-tap barcode**: an opt-in Scan-tab setting that logs a known barcode the moment it scans.
+- **Copy a day onto today**: pull any past day's meals onto today in one action.
+
+If you are updating an existing deployment, upload the new `index.html`, `products.json`
+(unchanged this time), and `version.json` from this `site` folder. People already using
+the site will see an "a newer version is available" banner within about 30 minutes, or the
+next time they open it.
+
+## What changed in 2026.09.23-1
+
+The "Barcodes the app already recognizes" list on the Scan tab (the small arrow to expand
+it) now shows each brand's name clearly first, then what it covers, then the barcode count
+in parentheses -- instead of a single run-on line cramming counts and descriptions together.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change. People already using the site will
+see an "a newer version is available" banner within about 30 minutes, or the next time they
+open it.
+
 ## Deploying it (you do this part; I cannot host anything myself)
 
 Any static host that serves plain files over HTTPS will do. The simplest is GitHub Pages:
