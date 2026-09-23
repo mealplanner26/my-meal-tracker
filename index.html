@@ -915,6 +915,10 @@ function toast(msg, onUndo) {
 // A generic USDA food only joins them once it is genuinely a habit for this slot -- logged often enough, recently enough --
 // so a food you tried once does not crowd out the choice that actually belongs here. Kept strictly per slot: a dinner
 // favorite never appears while you are adding breakfast, and the other way around.
+// Which slots share one pool of "usual foods". Breakfast stays on its own; lunch and dinner share a pool, since
+// people often eat the same things at either; snacks stays on its own too, unless told otherwise.
+const SLOT_GROUPS = { breakfast: ['breakfast'], lunch: ['lunch', 'dinner'], dinner: ['lunch', 'dinner'], snacks: ['snacks'] };
+const SLOT_GROUP_LABEL = { breakfast: 'Breakfast', lunch: 'Lunch and Dinner', dinner: 'Lunch and Dinner', snacks: 'Snacks' };
 function usageStatsForSlot(slot) {
   const today = keyOf(new Date()), map = {}, byId = {}, todayMs = parseKey(today).getTime();
   state.meals.forEach(m => { byId[m.id] = m; });
@@ -922,10 +926,12 @@ function usageStatsForSlot(slot) {
   for (const [date, day] of Object.entries(state.plan)) {
     const t = parseKey(date).getTime();
     if (isNaN(t)) continue;
-    const w = Math.exp(-Math.max(0, todayMs - t) / 864e5 / 60);   // the same recent-counts-more weighting usageStats() uses, just for one slot
-    for (const mid of (day[slot] || [])) {
-      const m = byId[mid];
-      if (m) m.items.forEach(it => bump(it.foodId, w));
+    const w = Math.exp(-Math.max(0, todayMs - t) / 864e5 / 60);   // the same recent-counts-more weighting usageStats() uses, just for this slot's group
+    for (const s of (SLOT_GROUPS[slot] || [slot])) {
+      for (const mid of (day[s] || [])) {
+        const m = byId[mid];
+        if (m) m.items.forEach(it => bump(it.foodId, w));
+      }
     }
   }
   return map;
@@ -942,7 +948,8 @@ function slotQuickFoodIds(slot, limit) {
 function recentFoodsHtml() {
   const fm = foodMap(), slot = ui.fa.slot, ids = slotQuickFoodIds(slot, 8).filter(id => fm[id]);
   if (!ids.length) return '';
-  return '<div class="quick-chips" aria-label="Your usual foods for ' + esc(SLOT_LABEL(slot)) + '">' + ids.map(id => {
+  const label = SLOT_GROUP_LABEL[slot] || SLOT_LABEL(slot);
+  return '<div class="quick-chips" aria-label="Your usual foods for ' + esc(label) + '">' + ids.map(id => {
     const f = fm[id];
     return '<button class="chip-btn" data-action="fa-recent" data-id="' + esc(id) + '" aria-label="Add ' + esc(f.name) + '">+ ' + esc(f.name.length > 26 ? f.name.slice(0, 26) + '\u2026' : f.name) + '</button>';
   }).join('') + '</div>';
@@ -5393,7 +5400,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.09.23-2';
+const APP_VERSION = '2026.09.23-3';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
