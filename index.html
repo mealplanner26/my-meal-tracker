@@ -338,6 +338,7 @@ textarea { resize: vertical; display: block; }
   font: 500 0.88rem "Public Sans", system-ui, sans-serif; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; line-height: 1.25; min-height: 34px;
 }
 .chip-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-style: solid; }
+.chip-pin { border-color: #C9A227; }
 .quicklog { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
 .quicklog input { flex: 1 1 auto; min-width: 0; }
 .quicklog .btn { white-space: nowrap; }
@@ -674,6 +675,8 @@ function defaultState() {
     weights: [],     // body-weight log: [{ d: 'YYYY-MM-DD', kg: 80.2 }]
     steps: [],       // daily step counts: [{ d: 'YYYY-MM-DD', n: 8432 }]
     guideSeen: false, // the welcome banner has been dismissed. Kept on this device only.
+    pinned: [],       // food ids pinned as quick-add staples
+    autoScan: false,  // one-tap barcode logging (feature 4), off by default
     wkCollapsed: {},  // days folded away in the phone week view: { 'YYYY-MM-DD': true }. Kept on this device only.
     rdiPref: { age: '', sex: '' },   // whose vitamin and mineral amounts to show: age group 0-3 and 'F' or 'M'; empty means use the Goal details
     svFoods: [],     // foods you added to the sous vide planner: [{ id: 'svc-...', name, base: id of the built-in food it cooks like }]
@@ -898,6 +901,102 @@ function toast(msg, onUndo) {
   toastTimer = setTimeout(() => el.classList.remove('show'), onUndo ? 8000 : 2600);
 }
 
+/* ============================================================
+   FASTER ENTRY: five things that share one purpose, getting a food logged in fewer taps.
+   1. Recent foods: the last few DISTINCT foods you have picked, any time of day, not tied to a meal slot like the "usual for this slot" chips are.
+   2. Repeat: a one-tap "Log again" on anything already on the Day tab, for a second helping without a new search.
+   3. Pinned staples: foods you mark as always-quick, shown as big buttons above the search box.
+   4. One-tap barcode: an opt-in setting that, for a barcode already taught to the app, logs it the moment it is scanned instead of waiting for a confirm tap.
+   5. Copy the day: repeats every slot of a chosen day onto today in one action, not slot by slot.
+   ============================================================ */
+
+// ---------- 1. recent foods ----------
+// The last few distinct foods actually logged (any meal slot, any day), newest first. Read from the plan itself, so nothing new has to be stored to make this work.
+function recentFoodIds(limit) {
+  const byId = {}; state.meals.forEach(m => { byId[m.id] = m; });
+  const seen = new Set(), out = [];
+  const dates = Object.keys(state.plan).filter(d => state.plan[d] && SLOT_IDS.some(s => (state.plan[d][s] || []).length)).sort().reverse();
+  for (const date of dates) {
+    for (const slot of SLOT_IDS) {
+      const ids = (state.plan[date][slot] || []).slice().reverse();
+      for (const mid of ids) {
+        const m = byId[mid];
+        if (!m || m.items.length !== 1) continue;                    // only single-food entries have one clear "this is the food" answer
+        const fid = m.items[0].foodId;
+        if (seen.has(fid)) continue;
+        seen.add(fid); out.push(fid);
+        if (out.length >= limit) return out;
+      }
+    }
+  }
+  return out;
+}
+function recentFoodsHtml() {
+  const fm = foodMap(), ids = recentFoodIds(8).filter(id => fm[id]);
+  if (!ids.length) return '';
+  return '<div class="quick-chips" aria-label="Recently logged foods">' + ids.map(id => {
+    const f = fm[id];
+    return '<button class="chip-btn" data-action="fa-recent" data-id="' + esc(id) + '" aria-label="Add ' + esc(f.name) + '">+ ' + esc(f.name.length > 26 ? f.name.slice(0, 26) + '\u2026' : f.name) + '</button>';
+  }).join('') + '</div>';
+}
+
+// ---------- 2. repeat a logged entry ----------
+// Logs the same food and amount again, onto the same day and slot, right under where it already appears.
+function repeatEntry(date, slot, mealId, n) {
+  const meal = state.meals.find(m => m.id === mealId);
+  if (!meal || !SLOT_IDS.includes(slot)) return;
+  const before = JSON.stringify(state.plan);
+  if (!state.plan[date]) state.plan[date] = {};
+  const list = state.plan[date][slot] = state.plan[date][slot] || [];
+  for (let i = 0; i < (n || 1); i++) list.push(mealId);
+  saveState(); render();
+  toast('Logged "' + meal.name + '" again.', () => { state.plan = JSON.parse(before); saveState(); render(); });
+}
+
+// ---------- 3. pinned staples ----------
+// A short, ordered list of food ids you have pinned, synced like your other foods. Shown as big one-tap buttons above the food search.
+function cleanPinned(list) {
+  if (!Array.isArray(list)) return [];
+  const fm = foodMap(), seen = new Set(), out = [];
+  for (const id of list) { if (typeof id === 'string' && fm[id] && !seen.has(id)) { seen.add(id); out.push(id); } }
+  return out.slice(0, 20);
+}
+function pinFood(id) {
+  if (!foodMap()[id]) return;
+  state.pinned = cleanPinned(state.pinned || []);
+  if (!state.pinned.includes(id)) { state.pinned.push(id); saveState(); render(); toast('Pinned. It will show as a quick button on the Day tab.'); }
+}
+function unpinFood(id) {
+  const before = (state.pinned || []).slice();
+  state.pinned = before.filter(x => x !== id);
+  saveState(); render();
+  toast('Unpinned.', () => { state.pinned = before; saveState(); render(); });
+}
+function pinnedStapleHtml() {
+  const fm = foodMap(), ids = cleanPinned(state.pinned || []).filter(id => fm[id]);
+  if (!ids.length) return '';
+  return '<div class="quick-chips pinned-chips" aria-label="Your pinned foods">' + ids.map(id => {
+    const f = fm[id];
+    return '<button class="chip-btn chip-pin" data-action="fa-recent" data-id="' + esc(id) + '" aria-label="Add ' + esc(f.name) + '">\u2605 ' + esc(f.name.length > 26 ? f.name.slice(0, 26) + '\u2026' : f.name) + '</button>';
+  }).join('') + '</div>';
+}
+
+// ---------- 4. one-tap barcode logging ----------
+// Off by default: some people want to check the amount before it is logged. When on, scanning a barcode the app already knows logs it immediately at its usual amount, no confirm tap.
+function scanAutoAdd(f) {
+  const r = logFood(f, Number(ui.scan.qty) || 1, ui.scan.unit, ui.scan.slot);
+  if (!r) return false;
+  Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(ui.scan.slot) + ' automatically. Scan the next one whenever you are ready.' });
+  render();
+  toast('Added to ' + SLOT_LABEL(ui.scan.slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
+  return true;
+}
+
+// ---------- 5. copy a whole day onto today ----------
+function copyDayOptions() {
+  const days = Object.keys(state.plan).filter(d => d !== ui.date && SLOT_IDS.some(s => (state.plan[d][s] || []).length)).sort().reverse().slice(0, 30);
+  return days.map(d => '<option value="' + esc(d) + '">' + esc(parseKey(d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })) + '</option>').join('');
+}
 /* ---------- frequent meals (one-tap adds) ---------- */
 // Meals you eat at a given time of day, worked out from your own plan (recent ones count more). Nothing extra is stored.
 let slotCache = null;
@@ -1044,7 +1143,8 @@ function faPickHtml() {
     '<div><label for="faUnit">Unit</label><select id="faUnit" data-fa="unit">' + units.map(([l, g], i) => '<option value="' + i + '"' + (i === F.unit ? ' selected' : '') + '>' + (i === 0 ? 'grams' : esc(l) + ' (' + fmtG(g) + ' g)') + '</option>').join('') + '</select></div>' +
     (F.replace ? '' : '<div><label for="faSlot">Meal</label><select id="faSlot" data-fa="slot">' + optionsHtml(SLOTS, F.slot) + '</select></div>') + '</div>' +
     '<div class="builder-total"><div class="entry-name">' + n0(t.kcal) + ' kcal</div>' + macroChips(t) + '</div>' +
-    '<p style="margin:6px 0 0"><button class="link" data-action="facts-toggle" data-key="pick" aria-expanded="' + !!ui.facts.pick + '">' + (ui.facts.pick ? 'Hide' : 'Show') + ' nutrition facts for this amount</button></p>' +
+    '<p style="margin:6px 0 0"><button class="link" data-action="facts-toggle" data-key="pick" aria-expanded="' + !!ui.facts.pick + '">' + (ui.facts.pick ? 'Hide' : 'Show') + ' nutrition facts for this amount</button> · ' +
+    ((state.pinned || []).includes(f.id) ? '<button class="link" data-action="fa-unpin" data-id="' + esc(f.id) + '">★ Unpin</button>' : '<button class="link" data-action="fa-pin" data-id="' + esc(f.id) + '">☆ Pin for quick add</button>') + '</p>' +
     (ui.facts.pick ? factsHtml(t, { title: f.name, sub: n0(grams) + ' g', count: 1, report: { kind: 'pick' } }) : '') +
     '<div class="ai-actions">' + (F.replace ? '<button class="btn primary" data-action="fa-replace-apply">Use this food</button>' : '<button class="btn primary" data-action="fa-add">Add to ' + esc(faDay()) + '</button>') + '<button class="btn" data-action="fa-cancel">Cancel</button></div>' +
     '<p class="muted small" style="margin:8px 0 0">Numbers different from your package? <button class="link" data-action="fa-label">Enter it from its label</button></p></div>';
@@ -1054,6 +1154,7 @@ function foodAddHtml() {
   const RM = F.replace && state.meals.find(m => m.id === F.replace.mealId);
   const banner = RM ? '<div class="fa-state-note" role="status">Replacing the food in <strong>' + esc(RM.name) + '</strong>' + (F.replace.idx < 0 ? ' (all ' + RM.items.length + ' of its foods become the one you choose)' : '') + '. This changes the meal everywhere it is used. <button class="link" data-action="fa-replace-cancel">Cancel</button></div>' : '';
   return '<div class="foodadd">' + banner + '<label for="faQuery" class="sr-only">Add a food</label>' +
+    pinnedStapleHtml() + recentFoodsHtml() +
     '<input id="faQuery" data-fa="q" type="search" autocomplete="off" maxlength="80" placeholder="Add a food: search ' + USDA_FOODS.length.toLocaleString() + ' foods (banana, rice\u2026)" value="' + esc(F.q) + '">' +
     (used.length ? '<div class="quick-chips" aria-label="Your most-used foods">' + used.map(f => '<button class="chip-btn" data-action="fa-pick" data-id="' + esc(f.id) + '">' + esc(f.name.length > 30 ? f.name.slice(0, 30) + '\u2026' : f.name) + '</button>').join('') + '</div>' : '') +
     (F.form ? faFormHtml() : F.pick ? faPickHtml() : '<div id="faResults">' + (F.q.trim() ? faResultsHtml() : '') + '</div>') + '</div>';
@@ -1776,7 +1877,7 @@ function backupApply(mode) {
   const snap = JSON.stringify(state), docs = R.obj.docs;
   if (mode === 'replace') {
     const d = defaultState();
-    for (const k of ['meals', 'customFoods', 'barcodes', 'plan', 'targets', 'sv', 'profile', 'weights', 'steps', 'rdiPref', 'svFoods']) state[k] = d[k];
+    for (const k of ['meals', 'customFoods', 'barcodes', 'plan', 'targets', 'sv', 'profile', 'weights', 'steps', 'rdiPref', 'svFoods', 'pinned']) state[k] = d[k];
     state.plan = {};
     for (const [id, doc] of Object.entries(docs)) applyDoc(id, doc);
     svSyncCustom();
@@ -2051,6 +2152,7 @@ function viewPlan() {
       return '<li class="entry"><div><div class="entry-name">' + esc(meal.name) + (g.n > 1 ? ' <span class="qty-badge">\u00d7' + g.n + '</span>' : '') + '</div>' + mealLineHtml(meal) + macroChips(t) + qtyControlHtml(ui.date, id, meal, g.n) + '</div>' +
         '<div class="entry-side"><span class="kcal">' + n0(t.kcal) + ' kcal</span>' + (g.n > 1 ? '<span class="muted small">' + g.n + ' \u00d7 ' + n0(one.kcal) + '</span>' : '') + '<span class="row-actions">' +
         '<button class="link" data-action="facts-toggle" data-key="' + esc(ui.date + '|' + id + '|' + meal.id) + '" aria-expanded="' + !!ui.facts[ui.date + '|' + id + '|' + meal.id] + '" aria-label="Nutrition facts for ' + esc(meal.name) + '">Facts</button>' +
+        '<button class="link" data-action="repeat-entry" data-date="' + esc(ui.date) + '" data-slot="' + esc(id) + '" data-meal="' + esc(meal.id) + '" aria-label="Log ' + esc(meal.name) + ' again">Log again</button>' +
         '<button class="link" data-action="copy-meal" data-meal="' + esc(meal.id) + '" aria-label="Copy ' + esc(meal.name) + '">Copy</button>' +
         '<button class="link danger" data-action="remove-group" data-date="' + ui.date + '" data-slot="' + id + '" data-id="' + esc(meal.id) + '" aria-label="Remove ' + esc(meal.name) + ' from ' + name + '">Remove</button></span></div></li>' + factsRowHtml(ui.date, id, meal, g.n);
     }).join('');
@@ -2108,6 +2210,10 @@ function viewPlan() {
     '<select id="copyTo" aria-label="Copy this day to another day"><option value="">Copy this day to…</option>' +
     (later.length ? '<option value="rest-of-week">Rest of this week (' + later.length + ' day' + (later.length === 1 ? '' : 's') + ')</option>' : '') +
     copyOptions + '</select>' + keepBox() + '</div>';
+  const pastDays = copyDayOptions();
+  const copyFromBar = pastDays ? '<div class="copybar" role="group" aria-label="Copy a past day">' +
+    '<select id="copyDayFrom" aria-label="Copy a past day onto today"><option value="">Copy a day onto today\u2026</option>' + pastDays + '</select>' +
+    '<button class="btn" data-action="copy-day-onto-today">Copy onto today</button></div>' : '';
 
   return guideBannerHtml() + extraBannerHtml() + '<div class="datebar">' +
     '<h2>' + label + '</h2>' +
@@ -2115,7 +2221,7 @@ function viewPlan() {
     '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Choose a date">' +
     '<button class="btn" data-action="next-day" aria-label="Next day">Next</button>' +
     '<button class="btn" data-action="today">Today</button>' +
-    '</div>' + quickLogHtml() + foodAddHtml() + auditHtml() + copyBar + clipBar() + '<div class="plan"><div>' + slotsHtml + '</div>' + summary + '</div>';
+    '</div>' + quickLogHtml() + foodAddHtml() + auditHtml() + copyBar + copyFromBar + clipBar() + '<div class="plan"><div>' + slotsHtml + '</div>' + summary + '</div>';
 }
 
 // One box of the week: the meals in one slot on one day, plus a menu to add another.
@@ -2419,6 +2525,7 @@ function cleanTargets(d) {
 // The documents this device would store right now, built from the app's state.
 function docsFromState() {
   const docs = { meals: { list: state.meals }, foods: { list: state.customFoods }, barcodes: { map: state.barcodes || {} }, targets: cleanTargets(state.targets) };
+  if ((state.pinned && state.pinned.length) || 'pinned' in SYNC.remote) docs.pinned = { list: cleanPinned(state.pinned || []) };
   if (state.sv) docs.sousvide = Object.assign({}, state.sv);
   if (state.profile) docs.profile = Object.assign({}, state.profile); else if ('profile' in SYNC.remote) docs.profile = { cleared: true };
   if ((state.weights && state.weights.length) || 'weights' in SYNC.remote) docs.weights = { list: cleanWeights(state.weights || []) || [] };
@@ -2450,6 +2557,7 @@ function applyDoc(id, data) {
   if (id === 'rdipref') { state.rdiPref = cleanRdiPref(data); return true; }
   if (id === 'svfoods') { const l = cleanSvFoods(data.list); if (!l) return false; state.svFoods = l; svSyncCustom(); return true; }
   if (id === 'targets') { const c = cleanTargets(data); if (!c) return false; state.targets = c; return true; }
+  if (id === 'pinned') { state.pinned = cleanPinned(data.list); return true; }
   if (/^plan-\d{4}-\d{2}$/.test(id)) {
     const days = cleanDays(data.days);
     if (!days) return false;
@@ -2469,6 +2577,7 @@ function mergeIn(inc) {
   if (foods) state.customFoods = union(foods, state.customFoods);
   const codes = inc.barcodes && cleanBarcodes(inc.barcodes.map);
   if (codes) state.barcodes = Object.assign({}, state.barcodes || {}, codes);
+  if (inc.pinned) { const add = cleanPinned(inc.pinned.list); state.pinned = cleanPinned((state.pinned || []).concat(add.filter(id => !(state.pinned || []).includes(id)))); }
   if (inc.targets) applyDoc('targets', inc.targets);
   if (inc.sousvide) applyDoc('sousvide', inc.sousvide);
   const rw = inc.weights && cleanWeights(inc.weights.list);
@@ -2897,7 +3006,7 @@ function handleCode(raw, fmt) {
   if (!code) { ui.scan.msg = 'That number is not a valid barcode. Check the digits and try again.'; render(); return false; }
   Object.assign(ui.scan, { code, typed: showCode(code), msg: '', form: null, linkQuery: '', photoFailed: false, brandSkip: '' });
   const f = foodForCode(code);
-  if (f) setDefaultAmount(f);
+  if (f) { setDefaultAmount(f); if (state.autoScan && scanAutoAdd(f)) return true; }
   render();
   return true;
 }
@@ -2981,8 +3090,13 @@ const BRAND_SCOPE = { 'Larabar': 'all Larabar products', 'BODYARMOR': 'all BODYA
   'Wonderful': 'pistachios and almonds', "Lily's": 'chocolate, baking chips and gummy candy', 'Yukon Gold': 'three bagged raw potatoes' };
 function brandInfoHtml() {
   const by = {}; BRAND_PACK.forEach(r => { by[r[2]] = (by[r[2]] || 0) + 1; });
-  return '<details style="margin-top:14px"><summary>Barcodes the app already recognizes</summary><p class="muted small" style="margin:8px 0">' +
-    Object.keys(by).sort().map(b => esc(b) + ' (' + by[b] + (BRAND_SCOPE[b] ? ': ' + esc(BRAND_SCOPE[b]) : '') + ')').join('; ') + '. About ' + BRAND_PACK.length + ' products in all, from the USDA Branded Foods data (public domain). ' +
+  // one line per brand: its name first (plain, easy to scan), then what it covers, then the count -- instead of the old cramped "Name (55: scope)" run-on.
+  const rows = Object.keys(by).sort().map(b =>
+    '<li><strong>' + esc(b) + '</strong>' + (BRAND_SCOPE[b] ? ': ' + esc(BRAND_SCOPE[b]) : '') + ' <span class="muted small">(' + by[b] + ' barcode' + (by[b] === 1 ? '' : 's') + ')</span></li>'
+  ).join('');
+  return '<details style="margin-top:14px"><summary>Barcodes the app already recognizes</summary>' +
+    '<ul class="sv-steps">' + rows + '</ul>' +
+    '<p class="muted small" style="margin:8px 0">About ' + BRAND_PACK.length + ' products in all, from the USDA Branded Foods data (public domain). ' +
     'They are found by barcode only, never by name, and only for these brands. Fresh produce such as lettuce and potatoes is not covered by barcode: use the food search, which has the USDA entries. To add more brands, ask me. Your own label entries always win over these.</p></details>';
 }
 function scanAddToPlan() {
@@ -3103,6 +3217,7 @@ function viewScan() {
       : '<div class="scan-actions"><button class="btn primary big" data-action="scan-live">Scan with camera</button>' +
         '<label class="btn big" for="scanPhoto">Take a photo</label><input type="file" id="scanPhoto" data-scan="photo" accept="image/*" capture="environment" class="sr-only">' +
         '<label class="btn big" for="scanPick">Choose a photo</label><input type="file" id="scanPick" data-scan="photo" accept="image/*" class="sr-only"></div>') +
+    '<label class="keep" style="margin:10px 0 4px"><input type="checkbox" data-scan="autoAdd"' + (state.autoScan ? ' checked' : '') + '> Log a known barcode the instant it scans, at its usual amount</label>' +
     '<label for="scanCode">Or type the number under the barcode</label>' +
     '<div class="scan-typerow"><input id="scanCode" data-scan="typed" inputmode="numeric" autocomplete="off" maxlength="16" placeholder="012345678905" value="' + esc(S.typed) + '"><button class="btn" data-action="scan-lookup">Look up</button></div>' +
     (S.msg ? '<p class="ai-note scan-msg-line" role="status">' + esc(S.msg) + (S.busy ? ' <button class="link" data-action="scan-stop">Stop</button>' : '') + '</p>' : '') +
@@ -3172,6 +3287,7 @@ function scanChange(t) {
   else if (k === 'slot') ui.scan.slot = t.value;
   else if (k === 'f:basis' && ui.scan.form) { ui.scan.form.basis = t.value; render(); }
   else if (k.startsWith('f:') && ui.scan.form) ui.scan.form[k.slice(2)] = t.value;
+  else if (k === 'autoAdd') { state.autoScan = !!t.checked; saveState(); }
 }
 
 /* ============================================================
@@ -5038,6 +5154,19 @@ document.addEventListener('click', e => {
   else if (a === 'support-copy') copyText(supportInfo(), 'Copied the support info. Paste it in a message.');
   else if (a === 'report') copyText(reportText(el.dataset.kind, el.dataset.key), 'Copied. Paste it in a message and say what looks wrong.');
   else if (a === 'repeat-yesterday-slot') repeatYesterdaySlot(el.dataset.slot);
+  else if (a === 'repeat-entry') repeatEntry(el.dataset.date, el.dataset.slot, el.dataset.meal, 1);
+  else if (a === 'fa-pin') pinFood(el.dataset.id);
+  else if (a === 'fa-unpin') unpinFood(el.dataset.id);
+  else if (a === 'fa-recent') {
+    const f = foodMap()[el.dataset.id];
+    if (!f) return;
+    const units = unitsFor(f), unitIdx = units.length > 1 ? 1 : 0, qty = 1;
+    const r = logFood(f, qty, unitIdx, ui.fa.slot);
+    if (!r) return;
+    render();
+    toast('Added ' + r.name + ' to ' + SLOT_LABEL(ui.fa.slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
+  }
+  else if (a === 'copy-day-onto-today') { const sel = $('copyDayFrom'); if (sel && sel.value) runCopy([[sel.value, ui.date]], SLOT_IDS); }
   else if (a === 'wk-toggle') wkToggle(el.dataset.date);
   else if (a === 'wk-collapse-all') wkAll(true);
   else if (a === 'wk-expand-all') wkAll(false);
@@ -5257,7 +5386,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.09.22-1';
+const APP_VERSION = '2026.09.23-1';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
