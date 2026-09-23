@@ -1032,9 +1032,12 @@ function slotStats() {
   return slotCache;
 }
 // Which meals belong to a part of the day. Worked out from what you have actually logged, so nothing has to be tagged:
-// a meal you have eaten at breakfast is a breakfast meal (and stays out of the lunch menu); a meal you have eaten at both is in both; a meal never used anywhere yet is offered everywhere until its first use.
+// a meal you have eaten at breakfast is a breakfast meal (and stays out of the lunch/dinner menu); lunch and dinner share one pool, since a meal
+// you have eaten at either belongs to both; a meal never used anywhere yet is offered everywhere until its first use.
 function slotMealsSplit(slot) {
-  const st = slotStats(), scores = st.bySlot[slot] || {}, mine = [], other = [];
+  const st = slotStats(), scores = {};
+  (SLOT_GROUPS[slot] || [slot]).forEach(s => { const b = st.bySlot[s] || {}; Object.entries(b).forEach(([id, sc]) => { scores[id] = (scores[id] || 0) + sc; }); });
+  const mine = [], other = [];
   state.meals.forEach(m => { if (scores[m.id] > 0 || !(st.all[m.id] > 0)) mine.push(m); else other.push(m); });
   mine.sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0) || a.name.localeCompare(b.name));
   other.sort((a, b) => a.name.localeCompare(b.name));
@@ -1043,11 +1046,13 @@ function slotMealsSplit(slot) {
 ui.slotAll = {};      // the parts of the day where "More meals" was chosen (this visit only)
 function slotOptionsHtml(slot) {
   const { mine, other } = slotMealsSplit(slot), opt = m => '<option value="' + esc(m.id) + '">' + esc(m.name) + '</option>';
-  return (mine.length ? '<optgroup label="Usual for ' + esc(SLOT_LABEL(slot).toLowerCase()) + '">' + mine.map(opt).join('') + '</optgroup>' : '') +
+  const label = (SLOT_GROUP_LABEL[slot] || SLOT_LABEL(slot)).toLowerCase();
+  return (mine.length ? '<optgroup label="Usual for ' + esc(label) + '">' + mine.map(opt).join('') + '</optgroup>' : '') +
     (other.length ? (ui.slotAll[slot] ? '<optgroup label="Other meals">' + other.map(opt).join('') + '</optgroup>' : '<option value="__more">More meals (' + other.length + ')\u2026</option>') : '');
 }
 function frequentMeals(slot, limit) {
-  const st = slotStats(), day = state.plan[ui.date] || {}, already = new Set(day[slot] || []), scores = st.bySlot[slot] || {};   // only meals you actually eat at this time of day
+  const st = slotStats(), day = state.plan[ui.date] || {}, already = new Set(day[slot] || []), scores = {};   // only meals you actually eat at this time of day (lunch and dinner share a pool, like slotMealsSplit)
+  (SLOT_GROUPS[slot] || [slot]).forEach(s => { const b = st.bySlot[s] || {}; Object.entries(b).forEach(([id, sc]) => { scores[id] = (scores[id] || 0) + sc; }); });
   const byId = {}; state.meals.forEach(m => { byId[m.id] = m; });
   return Object.entries(scores).filter(([id, sc]) => sc >= 0.3 && byId[id] && !already.has(id))
     .sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => byId[id]);
@@ -5399,7 +5404,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.09.23-4';
+const APP_VERSION = '2026.09.23-5';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
