@@ -15,8 +15,8 @@ built-in check that warns a person immediately if their own browser's storage is
 not working, instead of failing silently.
 
 What is different from the claude.ai version:
-- No AI tab and no photo label reader — those need a live claude.ai connection. Labels are
-  typed in on the Scan tab instead. The Sous Vide planner still works, since it needs no AI.
+- No AI tab and no photo label reader — those need a live claude.ai connection, so that tab
+  is hidden here entirely. Labels are typed in on the Scan tab instead.
 - No sync between a person's own devices. Each device holds its own data. Moving data
   between devices, or keeping a safety copy, is done with the "Download a backup" and
   "Restore from a backup" buttons under "Help and backup".
@@ -47,6 +47,98 @@ If you are updating an existing deployment, upload the new `index.html` and `ver
 from this `site` folder. `products.json` did not change. People already using the site will
 see an "a newer version is available" banner within about 30 minutes, or the next time they
 open it.
+
+## What changed in 2026.09.23-2
+
+The quick-add foods above the search box on the Day tab now work per meal slot, and favor
+foods you have actually scanned or entered yourself:
+
+- A food you scanned or typed in shows up as a one-tap button the moment you have logged it
+  once for a given meal -- breakfast, lunch, dinner, or snacks.
+- A generic USDA food only joins that list once it is genuinely a habit for that particular
+  slot (logged a couple of times recently, or more further back). One try does not count.
+- Breakfast, lunch, dinner, and snack suggestions are now kept fully separate: a dinner
+  favorite never shows up while you are adding breakfast, and the other way around.
+- The separate "your most-used foods" row (which ignored which meal it was for) has been
+  folded into this one, slot-aware row, so there is one row doing this job, not two.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
+## What changed in 2026.09.23-3
+
+Correcting the previous update: lunch and dinner now share one pool of quick-add foods
+(logging something at lunch makes it available as a one-tap suggestion at dinner too, and
+the other way around), since people often eat the same things at either. Breakfast and
+snacks each still keep their own separate pool, untouched by this change.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
+## What changed in 2026.09.23-4
+
+Fixing a real problem from the previous update: foods you actually eat often could vanish
+from the quick-add row entirely if they hadn't crossed an arbitrary "used twice recently"
+bar, especially with only a short history so far. That hard cutoff is gone. Now nothing is
+ever hidden outright: any food you have logged in a slot shows up, your own scanned or
+typed-in foods just start ranked a little higher than an equally-used generic food, and a
+food you genuinely eat often naturally rises to the top over time.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
+## What changed in 2026.09.23-5
+
+Extended the lunch/dinner merge to the "Add a meal" dropdown and its one-tap chips, not just
+the individual-food quick-add row. A meal you eat at lunch now shows under "Usual for lunch
+and dinner" when adding to either slot, and the same for a dinner meal. Breakfast keeps its
+own separate list, untouched.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
+## What changed in 2026.09.23-6
+
+Fixed a real bug: any meal you had saved but never actually planned onto a day (a recipe
+you created but hadn't logged yet) was being shown as "usual" for every single meal slot,
+including breakfast -- so dinner dishes like pasta or salmon could appear in the breakfast
+suggestions. That fallback is gone. "Usual for X" now only ever shows meals you have
+actually eaten at that time before. A never-planned meal still shows up fine under "More
+meals", it just is not falsely presented as a habit it is not yet.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
+## What changed in 2026.09.30-1
+
+The RDI tab (Vitamins and minerals) can now average a week instead of just showing one day:
+- A **Day / Week average** toggle at the top of the RDI tab. Week average shows the per-day
+  average across whichever of the last 7 days actually have anything logged (empty days do
+  not drag the average down), the same way the Week tab already averages calories.
+- Underneath the amounts, a **"To add next week"** list ranks every nutrient that is
+  under its goal on average, lowest first, and a **"To cut back next week"** list does the
+  same for sodium (or anything over its upper limit) — a direct answer to "what should I
+  change or add next week."
+- Also restored 4 verified-label products (Coconutmilk Beverage Unsweetened, Country Crock
+  Original Spread, Caesar Dressing, Pistachios No Shells Roasted Unsalted) that had been
+  added straight to a previous deployment's `products.json` but were missing from the app's
+  own master copy, so a future rebuild would have silently dropped them. The barcode list is
+  back to 766 products.
+
+If you are updating an existing deployment, upload the new `index.html`, `products.json`,
+and `version.json` from this `site` folder.
+
+## What changed in 2026.09.30-2
+
+Removed the sous vide cook planner. On this standalone site it was the only thing shown on
+the "AI" tab (since the real AI helpers need a live claude.ai connection), so that tab is
+now hidden here entirely rather than shown empty. On the claude.ai version, the AI tab keeps
+its other 6 tools (Describe a meal, Ingredient ideas, Fill the day, Swap a meal, Review my
+plan, Shopping list) unchanged. No data is affected: any device that had sous vide settings
+or added sous vide foods saved from before just quietly stops syncing them.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
 
 ## Deploying it (you do this part; I cannot host anything myself)
 

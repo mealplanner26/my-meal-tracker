@@ -320,15 +320,12 @@ textarea { resize: vertical; display: block; }
 .scan-msg { margin: 0; color: #fff; text-align: center; font-weight: 500; }
 
 
-/* ---------- sous vide planner ---------- */
-.sv h3 { margin: 18px 0 6px; }
+/* ---------- shared "steps / source / warning" styles, used by Weight goal, Help, RDI and food warnings ---------- */
 .sv-big { font: 800 2rem/1.1 "Bricolage Grotesque", "Public Sans", sans-serif; letter-spacing: -0.01em; margin: 4px 0 2px; }
 .sv-steps { margin: 6px 0 0; padding-left: 20px; }
 .sv-steps li { margin: 4px 0; }
 .sv-src { font-size: 0.85rem; color: var(--muted); }
 .sv-src a { color: var(--accent); }
-.sv details { margin-top: 14px; }
-.sv summary { cursor: pointer; font-weight: 600; }
 .sv-warn { margin: 10px 0 0; padding: 8px 14px; border-left: 4px solid var(--carbs); background: var(--surface); }
 
 /* ---------- streamlined entry ---------- */
@@ -670,7 +667,6 @@ function defaultState() {
     // plan = { '2026-09-19': { breakfast: ['m-1'], lunch: [], ... } }  (dates are the keys)
     plan: {},
     barcodes: {},    // { '0049000028911': 'custom-123' }: which food a scanned barcode means
-    sv: null,        // remembered sous vide settings: food, mode, bath (never thickness or the healthy-adults confirmation)
     profile: null,   // weight-goal details (metric numbers + choices)
     weights: [],     // body-weight log: [{ d: 'YYYY-MM-DD', kg: 80.2 }]
     steps: [],       // daily step counts: [{ d: 'YYYY-MM-DD', n: 8432 }]
@@ -679,7 +675,6 @@ function defaultState() {
     autoScan: false,  // one-tap barcode logging (feature 4), off by default
     wkCollapsed: {},  // days folded away in the phone week view: { 'YYYY-MM-DD': true }. Kept on this device only.
     rdiPref: { age: '', sex: '' },   // whose vitamin and mineral amounts to show: age group 0-3 and 'F' or 'M'; empty means use the Goal details
-    svFoods: [],     // foods you added to the sous vide planner: [{ id: 'svc-...', name, base: id of the built-in food it cooks like }]
     targets: { kcal: 2000, protein: 120, carbs: null, fat: null, sodium: null, potassium: null, sugar: null }   // the last four are blank until you set them: then they are worked out from your calories and the reference values
   };
 }
@@ -881,6 +876,18 @@ function dayTotals(key) {
     }
   }
   return t;
+}
+// The per-day average across a set of date keys (a calendar week for the RDI tab). Only days with
+// something logged count toward the average, so empty days do not drag it down artificially, matching
+// how the Week tab averages calories and protein.
+function rangeTotals(keys) {
+  let t = { kcal: 0, p: 0, c: 0, f: 0, na: 0, k: 0, naUnk: 0, kUnk: 0, mn: MN_KEYS.map(() => 0), mnUnk: MN_KEYS.map(() => 0), su: 0, suUnk: 0, fib: 0, fibUnk: 0, sat: 0, satUnk: 0, cho: 0, choUnk: 0, n: 0 };
+  let counted = 0;
+  keys.forEach(k => { const dt = dayTotals(k); if (dt.kcal > 0) { t = addT(t, dt); counted++; } });
+  if (!counted) return { total: t, counted: 0 };
+  const div = n => n / counted;
+  const avg = Object.assign({}, t, { kcal: div(t.kcal), p: div(t.p), c: div(t.c), f: div(t.f), na: div(t.na), k: div(t.k), su: div(t.su), fib: div(t.fib), sat: div(t.sat), cho: div(t.cho), mn: t.mn.map(div) });
+  return { total: avg, counted };
 }
 
 let toastTimer;
@@ -1758,6 +1765,20 @@ function mnFootHtml(t, who) {
   return (unk ? '<p class="muted small" style="margin:6px 0 0">* Counts only the foods that have data for it, so it can read low. Foods you enter from a label can include vitamin D, calcium and iron.</p>' : '') +
     '<p class="muted small" style="margin:6px 0 0">Showing the amounts for ' + rdiWhoText(who) + (who.assumedAge || who.assumedSex ? ' (assumed: set your age and sex in the RDI tab or the Goal tab)' : '') + '. Niacin is counted as measured, so it can read a little low.</p>';
 }
+// The week average's takeaway: what to add more of next week, and what to cut back on, ranked by how far off it is.
+function mnGapsHtml(t, who) {
+  const rows = mnRows(t, who);
+  const short = rows.filter(r => !r.limit && r.exp > 0 && r.pct < 100).sort((a, b) => a.pct - b.pct);
+  const over = rows.filter(r => (r.limit && r.pct > 100) || (r.ulFood && r.got > r.ul));
+  const item = r => '<li>' + esc(r.n.n) + ' — averaging ' + n0(r.pct) + '% of ' + (r.limit ? 'the limit' : 'the goal') + '</li>';
+  if (!short.length && !over.length) return '<p class="ov-steps" style="margin-top:12px">On this week’s average, every tracked nutrient reached its goal and stayed under its limit.</p>';
+  return '<div class="ov-steps" style="margin-top:12px">' +
+    (short.length ? '<p style="margin:0 0 4px"><strong>To add next week, lowest first:</strong></p><ul class="sv-steps">' + short.map(item).join('') + '</ul>' : '') +
+    (over.length ? '<p style="margin:8px 0 4px"><strong>To cut back next week:</strong></p><ul class="sv-steps">' + over.map(item).join('') + '</ul>' : '') +
+    '</div>';
+}
+// The 7 calendar-week days (same week the Week tab shows) containing the selected date.
+function rdiRangeKeys(date) { const start = weekStartKey(date); return [0, 1, 2, 3, 4, 5, 6].map(i => shiftKey(start, i)); }
 // The Day tab: a folded section inside the Daily overview.
 function mnDayHtml(total) {
   const who = rdiWho(), rows = mnRows(total, who).filter(r => !r.limit), met = rows.filter(r => r.pct >= 100).length;
@@ -1775,17 +1796,39 @@ function rdiTableHtml(who) {
   return '<div class="rdi-wrap"><table class="rdi-t" aria-label="Amounts, upper limits and label Daily Values"><thead><tr><th scope="col">Nutrient</th><th scope="col">Daily amount</th><th scope="col">Upper limit</th><th scope="col">Label DV</th></tr></thead><tbody>' + body + '</tbody></table></div>';
 }
 function viewRdi() {
-  const who = rdiWho(), t = dayTotals(ui.date), R = cleanRdiPref(state.rdiPref);
-  const label = parseKey(ui.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  const who = rdiWho(), R = cleanRdiPref(state.rdiPref);
+  const range = ui.rdiRange === 'week' ? 'week' : 'day';
   const opts = (list, cur) => list.map(([v, l]) => '<option value="' + v + '"' + (String(v) === String(cur) ? ' selected' : '') + '>' + esc(l) + '</option>').join('');
   const untracked = RDI.filter(n => !n.mk && n.limit == null).map(n => esc(n.n) + ' ' + fmtRdi(rdiAt(who.sex === 'M' ? n.m : n.f, who.age)) + ' ' + esc(n.u) + (n.ai ? ' (AI)' : '')).join(', ');
+  const short = k => parseKey(k).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const long = k => parseKey(k).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+
+  let t, periodLabel, emptyMsg, weekNote = '';
+  if (range === 'week') {
+    const keys = rdiRangeKeys(ui.date), rt = rangeTotals(keys);
+    t = rt.total;
+    periodLabel = short(keys[0]) + '–' + short(keys[6]);
+    emptyMsg = 'Nothing is logged for this week yet, so everything shows 0. Add foods on the Day tab.';
+    if (rt.counted > 0) weekNote = '<p class="muted small" style="margin:6px 0 0">A per-day average across the ' + rt.counted + ' of 7 days this week with anything logged, so empty days do not drag it down.</p>';
+  } else {
+    t = dayTotals(ui.date);
+    periodLabel = long(ui.date);
+    emptyMsg = 'Nothing is logged for this day yet, so everything shows 0. Add foods on the Day tab.';
+  }
+  const rangeToggle = '<div class="ai-tools" role="group" aria-label="Show one day or a week’s average" style="margin-top:12px">' +
+    '<button data-action="rdi-range" data-range="day" aria-pressed="' + (range === 'day') + '">Day</button>' +
+    '<button data-action="rdi-range" data-range="week" aria-pressed="' + (range === 'week') + '">Week average</button></div>';
+  const gaps = range === 'week' && t.kcal > 0 ? mnGapsHtml(t, who) : '';
+
   return '<div class="rdi"><div class="datebar"><h2>Vitamins and minerals</h2>' +
-    '<button class="btn" data-action="prev-day" aria-label="Previous day">Previous</button><input id="datePick" type="date" value="' + ui.date + '" aria-label="Choose a date"><button class="btn" data-action="next-day" aria-label="Next day">Next</button><button class="btn" data-action="today">Today</button></div>' +
-    '<p class="muted" style="margin:6px 0 0">What you are expected to get on <strong>' + esc(label) + '</strong>, and what the foods you logged add up to.</p>' +
+    '<button class="btn" data-action="' + (range === 'week' ? 'prev-week' : 'prev-day') + '" aria-label="Previous ' + (range === 'week' ? 'week' : 'day') + '">Previous</button><input id="datePick" type="date" value="' + ui.date + '" aria-label="Choose a date"><button class="btn" data-action="' + (range === 'week' ? 'next-week' : 'next-day') + '" aria-label="Next ' + (range === 'week' ? 'week' : 'day') + '">Next</button><button class="btn" data-action="today">Today</button></div>' +
+    rangeToggle +
+    '<p class="muted" style="margin:6px 0 0">What you are expected to get' + (range === 'week' ? ', on average, over the week of' : ' on') + ' <strong>' + esc(periodLabel) + '</strong>, and what the foods you logged add up to.</p>' +
     '<div class="ai-row" style="margin-top:12px"><div><label for="rdiAge">Age</label><select id="rdiAge" data-rdi="age">' + opts(RDI_AGES.map((l, i) => [i, l]), who.age) + '</select></div>' +
     '<div><label for="rdiSex">Amounts for</label><select id="rdiSex" data-rdi="sex">' + opts([['F', 'Women'], ['M', 'Men']], who.sex) + '</select></div></div>' +
     (who.fromProfile ? '<p class="muted small" style="margin:6px 0 0">Filled in from your Goal details. Choose here to change it for this list.</p>' : '') +
-    (t.kcal > 0 ? '' : '<p class="ov-steps" style="margin-top:12px">Nothing is logged for this day yet, so everything shows 0. Add foods on the Day tab.</p>') +
+    (t.kcal > 0 ? weekNote : '<p class="ov-steps" style="margin-top:12px">' + emptyMsg + '</p>') +
+    gaps +
     mnListHtml(t, who) + mnFootHtml(t, who) +
     '<h3>Not added up</h3><p class="muted small" style="margin:0">The food data has too little on these to add them up without under-counting, so only the daily amount is shown: ' + untracked + '.</p>' +
     '<details><summary>Upper limits and label Daily Values</summary>' +
@@ -1841,6 +1884,7 @@ function dayFactsHtml(total) {
 }
 ui.facts = {};
 ui.factsDay = false;
+ui.rdiRange = 'day';
 /* ============================================================
    HELP, BACKUP, SHARING PRODUCTS, REPORTS
    For people who open the public link: their data lives in their own browser, so a backup file matters; a public link can not hold a shared library that friends write to, so
@@ -1887,7 +1931,7 @@ function backupPreview(o) {
 function restoreSnapshot(snap) {
   const o = JSON.parse(snap);
   Object.keys(state).forEach(k => delete state[k]); Object.assign(state, o);
-  svSyncCustom(); if (state.sv) svHydrate(state.sv); if (state.profile) wlHydrate(state.profile);
+  if (state.profile) wlHydrate(state.profile);
   saveState(); render();
 }
 function backupApply(mode) {
@@ -1896,10 +1940,9 @@ function backupApply(mode) {
   const snap = JSON.stringify(state), docs = R.obj.docs;
   if (mode === 'replace') {
     const d = defaultState();
-    for (const k of ['meals', 'customFoods', 'barcodes', 'plan', 'targets', 'sv', 'profile', 'weights', 'steps', 'rdiPref', 'svFoods', 'pinned']) state[k] = d[k];
+    for (const k of ['meals', 'customFoods', 'barcodes', 'plan', 'targets', 'profile', 'weights', 'steps', 'rdiPref', 'pinned']) state[k] = d[k];
     state.plan = {};
     for (const [id, doc] of Object.entries(docs)) applyDoc(id, doc);
-    svSyncCustom();
   } else mergeIn(docs);
   ui.help.restore = null; ui.help.undo = snap; ui.help.msg = '';
   saveState(); render();
@@ -1994,8 +2037,7 @@ function viewHelp() {
     '<li><strong>If tracking is hard for you.</strong> If counting calories or weighing yourself makes you anxious, or you have a history of disordered eating, skip the calorie and weight tools and talk to a doctor or dietitian first. You can use the app just for planning meals.</li>' +
     '<li><strong>Getting accurate numbers.</strong> For packaged foods, photograph the label on the Scan tab (or type it in) once, and the app remembers it. Entries from the USDA brand list show their data month: older ones may be out of date or wrong, so compare with your package the first time. Generic foods are averages. Weigh raw and cooked food consistently. On the Day tab, the check for mismatches flags entries that look wrong.</li>' +
     '<li><strong>Where your data is.</strong> In this browser, on this device. Some accounts also sync between devices (the line above says whether yours does). Clearing your browser data can erase it, so download a backup now and then.</li>' +
-    '<li><strong>Claude helpers.</strong> ' + (AI.status === 'ready' ? 'The AI tab and the photo label reader use your own Claude account and usage, and may ask your permission the first time.' : 'The Claude helpers (the suggestions on the AI tab and the photo label reader) are switched off in this version, so type labels in by hand on the Scan tab. The sous vide planner on the AI tab works without them.') + '</li>' +
-    '<li><strong>Sous vide.</strong> Times and temperatures come from USDA and published tables. Use a thermometer, follow the warnings, and avoid the lower-temperature options for children, older adults, pregnant people, or anyone with a weakened immune system.</li></ul>' +
+    '<li><strong>Claude helpers.</strong> ' + (AI.status === 'ready' ? 'The AI tab and the photo label reader use your own Claude account and usage, and may ask your permission the first time.' : 'The Claude helpers (the AI tab and the photo label reader) are switched off in this version, so type labels in by hand on the Scan tab.') + '</li></ul>' +
     '<h3>Back up and restore</h3><p class="muted small" style="margin:0">A backup file has your meals, foods, plan, weights, steps and details. Keep it private.</p>' +
     '<div class="ai-actions"><button class="btn primary" data-action="backup-save">Download a backup</button><label class="btn" for="helpBackup">Restore from a backup</label><input type="file" id="helpBackup" data-help="backupfile" accept=".json,application/json,text/plain" class="sr-only">' +
     (H.undo ? '<button class="btn" data-action="backup-undo">Undo the last restore</button>' : '') + '</div>' + restoreCard +
@@ -2003,7 +2045,7 @@ function viewHelp() {
     '<div class="ai-actions"><button class="btn primary" data-action="products-save">Download my products file</button><label class="btn" for="helpProducts">Add products from a friend</label><input type="file" id="helpProducts" data-help="productsfile" accept=".json,application/json,text/plain" class="sr-only"></div>' + prodCard +
     '<h3>Something wrong?</h3><p class="muted small" style="margin:0">Tap "Report a wrong number" under any nutrition facts or on a scanned product to copy a message you can send. If the app or the camera is not working, copy the support info and send that. It has no meals, weights or personal details.</p>' +
     '<div class="ai-actions"><button class="btn" data-action="support-copy">Copy support info</button></div>' +
-    '<h3>Where the numbers come from</h3><ul class="sv-steps sv-src"><li>USDA FoodData Central (public domain): the food data and the brand barcode list, downloaded April 2026.</li><li>National Academies and NIH Office of Dietary Supplements: vitamin and mineral amounts. FDA: label Daily Values.</li><li>USDA and Douglas Baldwin\'s guide: sous vide times.</li><li>This is an independent hobby project, not connected to any of these organizations.</li></ul></div>';
+    '<h3>Where the numbers come from</h3><ul class="sv-steps sv-src"><li>USDA FoodData Central (public domain): the food data and the brand barcode list, downloaded April 2026.</li><li>National Academies and NIH Office of Dietary Supplements: vitamin and mineral amounts. FDA: label Daily Values.</li><li>This is an independent hobby project, not connected to any of these organizations.</li></ul></div>';
 }
 
 /* ---------- the daily overview: what to aim for, and what you have had so far ---------- */
@@ -2455,8 +2497,8 @@ function render() {
   document.querySelectorAll('.tabs button').forEach(b =>
     b.setAttribute('aria-current', b.dataset.tab === ui.tab ? 'page' : 'false'));
   const views = VIEWS;
-  const aiTab = document.querySelector('.tabs button[data-tab="ai"]');           // with the Claude helpers off, this tab is just the sous vide planner: say so
-  if (aiTab) { aiTab.textContent = AI.status === 'unavailable' ? 'Sous vide' : 'AI'; aiTab.setAttribute('aria-label', AI.status === 'unavailable' ? 'Sous vide planner' : 'AI helpers and the sous vide planner'); }
+  const aiTab = document.querySelector('.tabs button[data-tab="ai"]');           // nothing on this tab works without a live claude.ai connection: hide it rather than show an empty tab
+  if (aiTab) { const off = AI.status === 'unavailable'; aiTab.hidden = off; if (off && ui.tab === 'ai') ui.tab = 'plan'; }
   app.innerHTML = views[ui.tab]();
   if (ui.tab === 'meals') refreshPickOptions();
   if (ui.tab === 'scan') refreshLinkOptions();
@@ -2545,12 +2587,10 @@ function cleanTargets(d) {
 function docsFromState() {
   const docs = { meals: { list: state.meals }, foods: { list: state.customFoods }, barcodes: { map: state.barcodes || {} }, targets: cleanTargets(state.targets) };
   if ((state.pinned && state.pinned.length) || 'pinned' in SYNC.remote) docs.pinned = { list: cleanPinned(state.pinned || []) };
-  if (state.sv) docs.sousvide = Object.assign({}, state.sv);
   if (state.profile) docs.profile = Object.assign({}, state.profile); else if ('profile' in SYNC.remote) docs.profile = { cleared: true };
   if ((state.weights && state.weights.length) || 'weights' in SYNC.remote) docs.weights = { list: cleanWeights(state.weights || []) || [] };
   if ((state.steps && state.steps.length) || 'steps' in SYNC.remote) docs.steps = { list: cleanSteps(state.steps || []) || [] };
   if ((state.rdiPref && (state.rdiPref.age !== '' || state.rdiPref.sex !== '')) || 'rdipref' in SYNC.remote) docs.rdipref = cleanRdiPref(state.rdiPref);
-  if ((state.svFoods && state.svFoods.length) || 'svfoods' in SYNC.remote) docs.svfoods = { list: cleanSvFoods(state.svFoods || []) || [] };   // always the sorted, cleaned form, so two devices never see a phantom difference
   const months = {};
   for (const [date, day] of Object.entries(state.plan)) {
     const slots = {};
@@ -2569,12 +2609,10 @@ function applyDoc(id, data) {
   if (id === 'meals') { const l = cleanMeals(data.list); if (!l) return false; state.meals = l; return true; }
   if (id === 'foods') { const l = cleanFoods(data.list); if (!l) return false; state.customFoods = l; return true; }
   if (id === 'barcodes') { const m = cleanBarcodes(data.map); if (!m) return false; state.barcodes = m; return true; }
-  if (id === 'sousvide') { const c = cleanSV(data); if (!c) return false; state.sv = c; svHydrate(c); return true; }
   if (id === 'profile') { if (data.cleared) { state.profile = null; return true; } const c = cleanProfile(data); if (!c) return false; state.profile = c; wlHydrate(c); return true; }
   if (id === 'weights') { const l = cleanWeights(data.list); if (!l) return false; state.weights = l; return true; }
   if (id === 'steps') { const l = cleanSteps(data.list); if (!l) return false; state.steps = l; return true; }
   if (id === 'rdipref') { state.rdiPref = cleanRdiPref(data); return true; }
-  if (id === 'svfoods') { const l = cleanSvFoods(data.list); if (!l) return false; state.svFoods = l; svSyncCustom(); return true; }
   if (id === 'targets') { const c = cleanTargets(data); if (!c) return false; state.targets = c; return true; }
   if (id === 'pinned') { state.pinned = cleanPinned(data.list); return true; }
   if (/^plan-\d{4}-\d{2}$/.test(id)) {
@@ -2598,14 +2636,11 @@ function mergeIn(inc) {
   if (codes) state.barcodes = Object.assign({}, state.barcodes || {}, codes);
   if (inc.pinned) { const add = cleanPinned(inc.pinned.list); state.pinned = cleanPinned((state.pinned || []).concat(add.filter(id => !(state.pinned || []).includes(id)))); }
   if (inc.targets) applyDoc('targets', inc.targets);
-  if (inc.sousvide) applyDoc('sousvide', inc.sousvide);
   const rw = inc.weights && cleanWeights(inc.weights.list);
   if (rw) state.weights = cleanWeights((state.weights || []).concat(rw));   // both sides kept; on the same date the account's value wins
   const rs = inc.steps && cleanSteps(inc.steps.list);
   if (rs) state.steps = cleanSteps((state.steps || []).concat(rs));
   if (inc.rdipref) applyDoc('rdipref', inc.rdipref);
-  const rf = inc.svfoods && cleanSvFoods(inc.svfoods.list);
-  if (rf) { const have = new Set((state.svFoods || []).map(x => x.id)); state.svFoods = cleanSvFoods((state.svFoods || []).concat(rf.filter(x => !have.has(x.id)))); svSyncCustom(); }
   if (inc.profile && !inc.profile.cleared) applyDoc('profile', inc.profile);
   for (const [id, doc] of Object.entries(inc)) {
     const days = /^plan-\d{4}-\d{2}$/.test(id) && cleanDays(doc.days);
@@ -3009,7 +3044,6 @@ async function scanFrame() {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && SCAN.stream) stopLive();
   if (e.key === 'Enter' && e.target && e.target.id === 'scanCode') scanClick('scan-lookup', { dataset: {} });
-  if (e.key === 'Enter' && e.target && e.target.id === 'svQ') svAsk();
   if (e.key === 'Enter' && e.target && e.target.id === 'qlText') qlClick('ql-log');
   if (e.key === 'Enter' && e.target && e.target.id === 'faQuery' && ui.fa.q.trim()) { const r = searchFoods(ui.fa.q, 1); if (r.list[0]) faClick('fa-pick', { dataset: { id: r.list[0].id } }); }
 });
@@ -3310,747 +3344,6 @@ function scanChange(t) {
 }
 
 /* ============================================================
-   10. SOUS VIDE COOK PLANNER
-   SAFETY-CRITICAL, SO NOTHING HERE COMES FROM AI. Every time and temperature is read from a table below.
-   Where the numbers come from:
-   - Hold times: the USDA FSIS Cooking Guideline for Meat and Poultry Products (Revised Appendix A, December 2021,
-     FSIS-GD-2021-14): a 6.5-log Salmonella reduction for meat and 7-log for chicken and turkey, in tables that depend
-     on species and fat level. The USDA prints its tables as pictures, so the numbers were taken from the Canadian Food
-     Inspection Agency's copy of the same tables (derived from USDA Appendix A) and checked against every figure the USDA
-     text states in words (29 min at 140 F for 7% fat chicken, 12 min for meat at 140 F, the 13.7-26.9 s range at 160 F,
-     instant at 158 F for meat and 165 F for poultry) plus the smoothness of every row.
-   - Heat-up time (how long the CENTER takes to come up to the bath temperature) is NOT in any government table. It is an
-     estimate from a standard heat-conduction model with the constants used in Douglas Baldwin's "A Practical Guide to Sous
-     Vide Cooking" (thermal diffusivity 1.4e-7 m2/s, surface heat transfer 95 W/m2K), checked against published times, and
-     rounded on the safe side.
-   - Everything else (safe minimum temperatures, chilling, storage, reheating): USDA FSIS / FoodSafety.gov.
-   The table values are seconds. Each row is the minimum internal temperature in whole degrees F; a 0 means "instant".
-   ============================================================ */
-const SV_VERIFIED = '2026-09-19';
-const SV_TABLES = {"meat":[[130,6720.0],[131,5340.0],[132,4260.0],[133,3360.0],[134,2700.0],[135,2160.0],[136,1680.0],[137,1380.0],[138,1080.0],[139,900.0],[140,720.0],[141,540.0],[142,480.0],[143,360.0],[144,300.0],[145,240.0],[146,169.0],[147,134.0],[148,107.0],[149,85.0],[150,67.0],[151,54.0],[152,43.0],[153,34.0],[154,27.0],[155,22.0],[156,17.0],[157,14.0],[158,0.0],[159,0.0],[160,0.0]],"chicken":[[136,[3798.0,3870.0,3942.0,4020.0,4104.0,4194.0,4284.0,4380.0,4488.0,4602.0,4734.0,4884.0]],[137,[3006.0,3060.0,3126.0,3192.0,3258.0,3330.0,3408.0,3492.0,3582.0,3684.0,3798.0,3930.0]],[138,[2382.0,2430.0,2478.0,2532.0,2592.0,2652.0,2718.0,2784.0,2862.0,2952.0,3054.0,3174.0]],[139,[1896.0,1932.0,1974.0,2016.0,2064.0,2112.0,2172.0,2232.0,2298.0,2376.0,2466.0,2580.0]],[140,[1512.0,1542.0,1572.0,1608.0,1650.0,1692.0,1740.0,1788.0,1848.0,1920.0,2004.0,2100.0]],[141,[1206.0,1230.0,1260.0,1290.0,1320.0,1356.0,1392.0,1440.0,1494.0,1554.0,1626.0,1722.0]],[142,[966.0,984.0,1008.0,1032.0,1056.0,1086.0,1122.0,1164.0,1206.0,1260.0,1326.0,1410.0]],[143,[780.0,792.0,810.0,828.0,852.0,876.0,906.0,936.0,978.0,1026.0,1086.0,1158.0]],[144,[624.0,636.0,648.0,666.0,684.0,708.0,732.0,756.0,792.0,834.0,888.0,954.0]],[145,[504.0,516.0,522.0,534.0,552.0,570.0,588.0,612.0,642.0,678.0,726.0,780.0]],[146,[408.0,414.0,420.0,432.0,444.0,456.0,474.0,492.0,516.0,546.0,588.0,636.0]],[147,[330.0,330.0,336.0,342.0,354.0,366.0,378.0,396.0,414.0,444.0,474.0,516.0]],[148,[264.0,264.0,270.0,270.0,282.0,288.0,300.0,312.0,330.0,348.0,378.0,408.0]],[149,[210.0,210.0,210.0,216.0,216.0,228.0,234.0,246.0,258.0,276.0,294.0,324.0]],[150,[162.0,162.0,162.0,162.0,168.0,174.0,180.0,186.0,198.0,210.0,228.0,252.0]],[151,[126.0,120.0,120.0,126.0,126.0,126.0,132.0,138.0,150.0,156.0,174.0,186.0]],[152,[90.0,90.0,90.0,96.0,96.0,96.0,102.0,102.0,108.0,114.0,126.0,138.0]],[153,[72.0,72.0,72.0,72.0,78.0,78.0,78.0,78.0,84.0,84.0,84.0,96.0]],[154,[55.9,56.9,58.0,59.1,60.0,60.0,60.0,66.0,66.0,66.0,66.0,66.0]],[155,[44.2,45.0,45.9,46.8,47.7,48.6,49.5,50.4,51.4,52.4,53.4,54.4]],[156,[35.0,35.6,36.3,37.0,37.7,38.4,39.2,39.9,40.7,41.4,42.2,43.0]],[157,[27.7,28.2,28.7,29.3,29.8,30.4,31.0,31.6,32.2,32.8,33.4,34.0]],[158,[21.9,22.3,22.7,23.2,23.6,24.0,24.5,25.0,25.4,25.9,26.4,26.9]],[159,[17.3,17.6,18.0,18.3,18.7,19.0,19.4,19.8,20.1,20.5,20.9,21.3]],[160,[13.7,14.0,14.2,14.5,14.8,15.0,15.3,15.6,15.9,16.2,16.5,16.9]],[161,[10.8,11.0,11.2,11.5,11.7,11.9,12.1,12.4,12.6,12.8,13.1,13.3]],[162,[0.0,0.0,0.0,0.0,0.0,0.0,9.6,9.8,10.0,10.2,10.3,10.5]],[163,[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]],[164,[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]]],"turkey":[[136,[3840.0,3858.0,3876.0,3894.0,3918.0,3948.0,3978.0,4014.0,4056.0,4104.0,4170.0,4248.0]],[137,[3114.0,3132.0,3144.0,3168.0,3192.0,3216.0,3246.0,3282.0,3318.0,3372.0,3432.0,3510.0]],[138,[2532.0,2550.0,2562.0,2580.0,2604.0,2628.0,2652.0,2688.0,2724.0,2772.0,2832.0,2910.0]],[139,[2064.0,2076.0,2094.0,2106.0,2124.0,2148.0,2172.0,2202.0,2238.0,2286.0,2346.0,2424.0]],[140,[1686.0,1698.0,1710.0,1722.0,1740.0,1758.0,1782.0,1812.0,1848.0,1890.0,1950.0,2022.0]],[141,[1380.0,1392.0,1398.0,1410.0,1428.0,1446.0,1464.0,1494.0,1530.0,1572.0,1626.0,1692.0]],[142,[1134.0,1140.0,1146.0,1158.0,1170.0,1188.0,1206.0,1230.0,1266.0,1302.0,1356.0,1422.0]],[143,[930.0,936.0,942.0,954.0,966.0,978.0,996.0,1020.0,1044.0,1080.0,1128.0,1188.0]],[144,[768.0,768.0,774.0,780.0,792.0,804.0,822.0,840.0,864.0,900.0,942.0,996.0]],[145,[630.0,636.0,636.0,642.0,648.0,660.0,678.0,690.0,714.0,744.0,780.0,828.0]],[146,[522.0,522.0,522.0,528.0,534.0,540.0,552.0,570.0,588.0,612.0,648.0,690.0]],[147,[426.0,426.0,426.0,432.0,438.0,444.0,450.0,462.0,480.0,504.0,528.0,564.0]],[148,[348.0,348.0,348.0,348.0,354.0,360.0,366.0,378.0,390.0,408.0,432.0,462.0]],[149,[282.0,282.0,282.0,282.0,282.0,288.0,294.0,300.0,312.0,324.0,348.0,372.0]],[150,[228.0,222.0,222.0,222.0,222.0,228.0,234.0,240.0,246.0,258.0,270.0,294.0]],[151,[180.0,174.0,174.0,174.0,174.0,174.0,180.0,186.0,192.0,198.0,210.0,228.0]],[152,[138.0,138.0,138.0,138.0,138.0,138.0,138.0,138.0,144.0,150.0,162.0,168.0]],[153,[108.0,108.0,114.0,114.0,114.0,114.0,114.0,114.0,114.0,114.0,114.0,126.0]],[154,[90.0,90.0,90.0,90.0,90.0,90.0,90.0,90.0,90.0,96.0,96.0,96.0]],[155,[72.0,72.0,72.0,72.0,72.0,72.0,72.0,78.0,78.0,78.0,78.0,78.0]],[156,[59.0,59.3,59.5,59.8,60.0,60.0,60.0,60.0,60.0,60.0,60.0,60.0]],[157,[47.9,48.1,48.3,48.5,48.8,49.0,49.2,49.5,49.7,49.9,50.2,50.4]],[158,[38.8,39.0,39.2,39.4,39.6,39.8,40.0,40.1,40.3,40.5,40.7,40.9]],[159,[31.5,31.7,31.8,32.0,32.1,32.3,32.4,32.6,32.7,32.9,33.0,33.2]],[160,[25.6,25.7,25.8,26.0,26.1,26.2,26.3,26.4,26.6,26.7,26.8,26.9]],[161,[20.8,20.9,21.0,21.1,21.2,21.3,21.4,21.5,21.6,21.7,21.8,21.9]],[162,[16.9,16.9,17.0,17.1,17.2,17.3,17.3,17.4,17.5,17.6,17.7,17.7]],[163,[13.7,13.7,13.8,13.9,13.9,14.0,14.1,14.1,14.2,14.3,14.3,14.4]],[164,[11.1,11.2,11.2,11.3,11.3,11.4,11.4,11.5,11.5,11.6,11.6,11.7]],[165,[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]]]};
-
-// fat = the column of the poultry table used: the highest fat % among USDA samples of that cut, rounded up, plus 1 point (max 12).
-const SV_FOODS = [
-  { id: 'beef', label: 'Beef steak or roast (one whole piece)', kind: 'meat', short: 'beef' },
-  { id: 'pork', label: 'Pork chop, loin or tenderloin (one whole piece)', kind: 'meat', short: 'pork' },
-  { id: 'lamb', label: 'Lamb chop or roast (one whole piece)', kind: 'meat', short: 'lamb' },
-  { id: 'chicken-breast', label: 'Chicken breast, skinless', kind: 'chicken', short: 'chicken breast', fat: 4 },
-  { id: 'chicken-thigh', label: 'Chicken thigh or drumstick, skinless', kind: 'chicken', short: 'chicken thigh', fat: 9 },
-  { id: 'chicken-breast-skin', label: 'Chicken breast, skin on', kind: 'chicken', short: 'chicken breast', fat: 11 },
-  { id: 'chicken-skin', label: 'Chicken thigh, drumstick or wing, skin on', kind: 'chicken', short: 'chicken', fat: 12 },
-  { id: 'turkey-breast', label: 'Turkey breast, skinless', kind: 'turkey', short: 'turkey breast', fat: 4 },
-  { id: 'turkey-thigh', label: 'Turkey thigh, skinless', kind: 'turkey', short: 'turkey thigh', fat: 6 },
-  { id: 'turkey-breast-skin', label: 'Turkey breast, skin on', kind: 'turkey', short: 'turkey breast', fat: 9 },
-  { id: 'other-poultry', label: 'Other poultry, or not sure', kind: 'poultry', short: 'poultry', fat: 12 },
-  { id: 'fish-lean', label: 'Lean fish fillet (cod, snapper, halibut, sea bass...)', kind: 'fish-lean', short: 'lean fish' },
-  { id: 'fish-fatty', label: 'Fatty fish fillet (salmon, trout, arctic char, mackerel...)', kind: 'fish-fatty', short: 'fatty fish' },
-  { id: 'egg', label: 'Eggs, in the shell', kind: 'egg', short: 'eggs' },
-  { id: 'veg-root', label: 'Root vegetables and winter squash (carrots, potatoes, beets, parsnips...)', kind: 'veg-root', short: 'root vegetables' },
-  { id: 'veg-tender', label: 'Tender vegetables (asparagus, broccoli, green beans, peppers...)', kind: 'veg-tender', short: 'tender vegetables' }
-];
-const SV_BUILTIN = SV_FOODS.slice();
-/* Fish, eggs and vegetables are planned by svPlanOther below, separately from the USDA meat and poultry engine.
-   - Fish: Douglas Baldwin, A Practical Guide to Sous Vide Cooking (draft 0.4h, 2009), Table 3.5 (numbered 3.1 in later editions): minutes in the bath for a 6-log reduction of Listeria in
-     fin-fish, starting at 41 F. Lean fish D = 2.88 min and fatty fish D = 5.13 min at 60.5 C (Embarek and Huss 1993). Columns are 131, 136 and 141 F. Rows are 5 to 70 mm.
-     Columns: [mm, lean 131, lean 136, lean 141, fatty 131, fatty 136, fatty 141]. The table already includes warming from the fridge.
-   - Eggs: pasteurized in the shell at 135 F for at least 1 h 15 min (Schuman et al. 1997, as given by Baldwin). The soft "perfect egg" is 148 F for 45 to 60 min (Baldwin): texture, not pasteurization.
-   - Vegetables: NOT a safety table. Texture guidance from Anova Culinary's vegetable guide and Amazing Food Made Easy's charts: root vegetables and squash 183 F (190 F for very soft); tender vegetables 183 F. */
-const SV_OTHER = ['fish-lean', 'fish-fatty', 'egg', 'veg-root', 'veg-tender'];
-const svIsOther = kind => SV_OTHER.includes(kind), svIsFish = kind => kind === 'fish-lean' || kind === 'fish-fatty', svIsVeg = kind => kind === 'veg-root' || kind === 'veg-tender';
-const SV_FISH_ROWS = [[5, 138, 50, 16, 270, 87, 27], [10, 142, 55, 21, 239, 92, 32], [15, 151, 64, 30, 248, 100, 41], [20, 162, 76, 41, 260, 112, 53], [25, 178, 91, 56, 275, 127, 68],
-  [30, 196, 110, 72, 293, 146, 85], [35, 218, 131, 91, 315, 168, 105], [40, 243, 155, 112, 340, 193, 128], [45, 271, 181, 134, 369, 220, 152], [50, 302, 209, 159, 400, 250, 178],
-  [55, 336, 240, 185, 435, 283, 207], [60, 372, 272, 213, 472, 318, 237], [65, 411, 307, 243, 513, 355, 269], [70, 453, 344, 275, 556, 394, 303]];
-const SV_VEG_TIMES = { 'veg-root': [[25, 60, 120], [50, 120, 300]], 'veg-tender': [[13, 10, 30], [25, 30, 60], [50, 90, 120]] };   // [up to mm, least minutes, most minutes]
-// Minutes in the bath. A bath between two columns uses the colder column (longer). A thinner piece never uses less time than any thinner row asks for (the table has one odd row).
-function svFishMinutes(kind, thickMm, bathF) {
-  const off = kind === 'fish-lean' ? 1 : 4, col = bathF >= 141 ? 2 : bathF >= 136 ? 1 : bathF >= 131 ? 0 : null;
-  if (col === null || !(thickMm > 0)) return null;
-  let run = 0;
-  for (const r of SV_FISH_ROWS) { run = Math.max(run, r[off + col]); if (r[0] >= thickMm) return run; }
-  return null;
-}
-const svFishColumn = bathF => bathF >= 141 ? 141 : bathF >= 136 ? 136 : bathF >= 131 ? 131 : null;
-// Foods that this planner will not take, whatever they are called: the tables in it do not apply.
-const SV_BLOCKED = [
-  [/\b(ground|minced?|burgers?|patt(?:y|ies)|sausages?|brats?|meat ?balls?|hot ?dogs?|frankfurters?)\b/i, 'Ground and minced meat, burgers and sausages are not covered: the USDA sets 160\u00b0F for ground meat, higher than for whole cuts.'],
-  [/\b(shrimps?|prawns?|lobsters?|crabs?|crawfish|crayfish|oysters?|clams?|mussels?|scallops?|squid|octopus|shellfish)\b/i, 'Shellfish are not covered: pasteurizing does not remove the risk of hepatitis A or norovirus from shellfish (Baldwin).'],
-  [/\b(venison|deer|elk|moose|bison|buffalo|boar|rabbit|game|kangaroo)\b/i, 'Wild game and rabbit are not covered: the USDA tables in this planner are for beef, pork, lamb, chicken and turkey.'],
-  [/\b(stuffed|rolled|injected|needle|tenderized)\b/i, 'Stuffed, rolled, injected or needle-tenderized meat is not covered: the heat has to travel farther than the tables assume.']
-];
-const svBlockedReason = name => { const b = SV_BLOCKED.find(x => x[0].test(String(name))); return b ? b[1] : ''; };
-function cleanSvFoods(list) {
-  if (!Array.isArray(list)) return null;
-  const seen = new Set(), out = [];
-  for (const x of list) {
-    if (!x || typeof x.id !== 'string' || !/^svc-[a-z0-9-]{1,50}$/.test(x.id) || seen.has(x.id) || typeof x.name !== 'string' || typeof x.base !== 'string') continue;
-    const name = x.name.replace(/\s+/g, ' ').trim().slice(0, 40);
-    if (!name || !SV_BUILTIN.some(f => f.id === x.base) || svBlockedReason(name)) continue;
-    seen.add(x.id); out.push({ id: x.id, name, base: x.base });
-  }
-  return out.slice(0, 30);
-}
-function svSyncCustom() {             // make the planner's food list match the foods you added
-  for (let i = SV_FOODS.length - 1; i >= 0; i--) if (SV_FOODS[i].custom) { delete SV_FOOD_SIZES[SV_FOODS[i].id]; SV_FOODS.splice(i, 1); }
-  for (const c of (state.svFoods || [])) {
-    const b = SV_BUILTIN.find(f => f.id === c.base);
-    if (!b) continue;
-    SV_FOODS.push({ id: c.id, label: c.name + ' (cooks like ' + b.short + ')', kind: b.kind, fat: b.fat, short: c.name.toLowerCase(), custom: true, base: b.id, baseLabel: b.label, name: c.name });
-    SV_FOOD_SIZES[c.id] = SV_FOOD_SIZES[b.id];
-  }
-}
-const SV_MAX_F = 185, SV_MIN_MM = 6, SV_MAX_MM = 90, SV_START_C = 4, SV_FINISH_BUFFER_MIN = 10, SV_CUT_LIMIT_S = 6 * 3600;
-const svC = f => (f - 32) * 5 / 9;
-const svIsMeat = kind => kind === 'meat';
-// The lowest bath allowed. The app counts the hold from when the coldest point is 1 F below the bath, so it uses the
-// table row one degree below the bath setting: the bath must be at least one degree above the table's first row.
-function svMinBath(mode, kind) {
-  if (kind === 'egg') return mode === 'standard' ? 135 : 148;                        // fixed schedules
-  if (svIsFish(kind)) return mode === 'standard' ? 131 : 100;                         // pasteurized: 131 to 141. not pasteurized: 100 to 130
-  if (svIsVeg(kind)) return 180;
-  return mode === 'standard' ? (svIsMeat(kind) ? 146 : 166) : (svIsMeat(kind) ? 131 : 137);
-}
-const svMaxBath = (mode, kind) => kind === 'egg' ? svMinBath(mode, kind) : svIsFish(kind) ? (mode === 'standard' ? 141 : 130) : svIsVeg(kind) ? 190 : SV_MAX_F;
-const svDefaultBath = (mode, kind) => kind === 'egg' ? svMinBath(mode, kind) : svIsFish(kind) ? (mode === 'standard' ? 141 : 120) : svIsVeg(kind) ? (mode === 'standard' ? 183 : 190)
-  : mode === 'standard' ? svMinBath(mode, kind) : (svIsMeat(kind) ? 135 : 145);
-
-// Seconds to hold at internal temperature rowF (whole degrees F). null = colder than the table covers. 0 = instant.
-function svHoldSeconds(kind, rowF, fatCol) {
-  if (kind === 'poultry') {          // unknown or other species: FSIS says use the longer of the chicken and turkey times at 12% fat
-    const a = svHoldSeconds('chicken', rowF, 12), b = svHoldSeconds('turkey', rowF, 12);
-    return a === null || b === null ? null : Math.max(a, b);
-  }
-  const rows = SV_TABLES[kind];
-  if (rowF < rows[0][0]) return null;
-  const r = rows.find(x => x[0] === rowF);
-  if (!r) return 0;                  // hotter than the last row: instant
-  if (kind === 'meat') return r[1];
-  return Math.max(...r[1].slice(0, fatCol));   // the strictest of the columns up to this fat level (the turkey table dips slightly at 1-2% fat)
-}
-
-// How long the centre of a slab takes to come within targetC of the bath (one-term conduction solution with surface resistance).
-function svFirstRoot(Bi) { let lo = 0, hi = Math.PI / 2 - 1e-9; for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2; if (m * Math.tan(m) < Bi) lo = m; else hi = m; } return (lo + hi) / 2; }
-function svHeatUp(dMm, bathC, startC, targetC, alphaIn) {
-  const L = dMm / 2000, alpha = alphaIn || 1.4e-7, k = 0.5, h = 95;
-  const lam = svFirstRoot(h * L / k), C1 = 2 * Math.sin(lam) / (lam + Math.sin(lam) * Math.cos(lam));
-  const theta = (bathC - targetC) / (bathC - startC);
-  return theta >= C1 ? 0 : (L * L / (lam * lam * alpha)) * Math.log(C1 / theta);
-}
-// Extra time for measurement error, as the CFIA table notes recommend: +1 min for holds of 10 min or more, +5 s for 200 s to 10 min, +1 s under 30 s.
-const svAllowance = hold => hold <= 0 ? 0 : hold >= 600 ? 60 : hold >= 30 ? 5 : 1;
-
-function svDur(sec) {
-  sec = Math.max(0, Math.round(sec));
-  if (sec < 60) return sec + ' sec';
-  const m = Math.ceil(sec / 60);
-  return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
-}
-function svClock(mins) {
-  const day = mins < 0 ? -1 : mins >= 1440 ? 1 : 0;
-  const m = ((mins % 1440) + 1440) % 1440, h = Math.floor(m / 60), mm = m % 60;
-  return ((h % 12) || 12) + ':' + String(mm).padStart(2, '0') + ' ' + (h < 12 ? 'AM' : 'PM') + (day < 0 ? ' (the day before)' : '');
-}
-
-function svTableName(food) {
-  return svIsMeat(food.kind) ? 'USDA meat table (6.5-log Salmonella reduction)'
-    : food.kind === 'poultry' ? 'USDA chicken and turkey tables (7-log), 12% fat column, using the longer of the two'
-    : 'USDA ' + food.kind + ' table (7-log Salmonella reduction), ' + food.fat + '% fat column';
-}
-const SV_ALPHA_FISH = 0.995e-7;      // Baldwin's slow (safe side) thermal diffusivity, used in his fish tables
-function svServe(serveStr, totalMin) {
-  const sm = /^(\d{1,2}):(\d{2})$/.exec(serveStr || '');
-  if (!sm) return null;
-  const serveMin = Number(sm[1]) * 60 + Number(sm[2]);
-  return { serveMin, serveText: svClock(serveMin), startMin: serveMin - totalMin - SV_FINISH_BUFFER_MIN, startText: svClock(serveMin - totalMin - SV_FINISH_BUFFER_MIN), lateText: svClock(serveMin - SV_FINISH_BUFFER_MIN) };
-}
-function svPlanOther(food, inp) {
-  const kind = food.kind, mode = inp.mode, bath = Math.round(Number(inp.bathF)), errors = [], warnings = [], lines = [];
-  if (mode !== 'standard' && mode !== 'low') errors.push('Choose a mode.');
-  const min = svMinBath(mode, kind), max = svMaxBath(mode, kind), thick = Number(inp.thickMm), needsThick = kind !== 'egg', maxMm = svIsFish(kind) ? 70 : 50;
-  if (!(bath >= min && bath <= max)) errors.push(min === max ? 'This schedule uses a ' + min + '\u00b0F (' + svC(min).toFixed(1) + '\u00b0C) bath.' : 'In this mode the bath for this food must be between ' + min + '\u00b0F (' + svC(min).toFixed(1) + '\u00b0C) and ' + max + '\u00b0F (' + svC(max).toFixed(1) + '\u00b0C).');
-  if (needsThick && !(thick >= 5 && thick <= maxMm)) errors.push('Enter the thickness of the thickest part, between 5 mm (0.2 in) and ' + maxMm + ' mm (' + (maxMm / 25.4).toFixed(1) + ' in). Thicker pieces are not supported.');
-  if (mode === 'low' && !svIsVeg(kind) && !inp.confirm) errors.push('These are only for healthy adults, because the food is not pasteurized. Tick the box above to confirm, or switch to the pasteurized schedule.');
-  if (errors.length) return { ok: false, errors };
-  const bathC = svC(bath);
-  let totalSec, big, tableName, rowNote;
-  const notPast = 'NOT PASTEURIZED. Only for healthy adults. Do not serve it to anyone who is pregnant, over 65, under 5, or has a weakened immune system. For them, use the pasteurized schedule.';
-  const holdWarn = 'At bath temperatures below 140\u00b0F, take the food out when the time is up and serve it right away. The USDA says cooked food should be held at 140\u00b0F or above until it is served.';
-  if (svIsFish(kind)) {
-    const lean = kind === 'fish-lean';
-    if (mode === 'standard') {
-      const cut = bathC > 54.44 ? svHeatUp(thick, bathC, SV_START_C, 54.44, SV_ALPHA_FISH) : 0;
-      if (cut > SV_CUT_LIMIT_S) return { ok: false, errors: ['At ' + bath + '\u00b0F a fillet this thick takes too long to warm up (the USDA recommends no more than 6 hours between 50\u00b0F and 130\u00b0F while heating). Cut it thinner or use a warmer bath.'] };
-      const col = svFishColumn(bath), mins = svFishMinutes(kind, thick, bath);
-      if (mins === null) return { ok: false, errors: ['That size and temperature are outside the table.'] };
-      totalSec = mins * 60; big = 'At least ' + svDur(totalSec) + ' in the bath';
-      lines.push('<strong>' + esc(svDur(totalSec)) + '</strong> from Baldwin\'s table for ' + (lean ? 'lean' : 'fatty') + ' fish (a 6-log reduction of Listeria). It already includes the time for a fridge-cold fillet ' + thick.toFixed(0) + ' mm (' + (thick / 25.4).toFixed(1) + ' in) thick to warm through, so nothing is added.');
-      if (col !== bath) lines.push('The table has 131, 136 and 141\u00b0F columns. Your bath is ' + bath + '\u00b0F, so the time for the ' + col + '\u00b0F column is used, which errs on the safe side.');
-      tableName = 'Baldwin, A Practical Guide to Sous Vide Cooking, pasteurization table for ' + (lean ? 'lean' : 'fatty') + ' fish';
-      rowNote = 'It counts the time from putting a fridge-cold fillet into a bath already at temperature. The table is from the 2009 draft of the guide; a thinner fillet never uses less time than a thinner row asks for.';
-      if (bath < 140) warnings.push(holdWarn);
-      warnings.push('Pasteurizing does not make raw shellfish safe, and this planner is for finned fish only. Start with very fresh fish, kept cold.');
-    } else {
-      const heat = svHeatUp(thick, bathC, SV_START_C, bathC - 5 / 9, SV_ALPHA_FISH);
-      if (heat > 4 * 3600) return { ok: false, errors: ['At ' + bath + '\u00b0F a fillet this thick needs more than 4 hours just to warm through. Fish that is not pasteurized should come up to temperature and be served within 4 hours (US Food Code). Cut it thinner or use a warmer bath.'] };
-      totalSec = Math.ceil(heat / 60) * 60 + 60; big = 'About ' + svDur(totalSec) + ' in the bath';
-      lines.push('About <strong>' + esc(svDur(totalSec)) + '</strong> for the center of a fridge-cold fillet ' + thick.toFixed(0) + ' mm (' + (thick / 25.4).toFixed(1) + ' in) thick to come up to temperature (a cautious estimate that errs long: Baldwin\'s own heating table gives shorter times, so it will be ready by then).');
-      lines.push('Serve within <strong>4 hours</strong> of putting it in. There is no hold time: the fish is not being pasteurized.');
-      tableName = 'Warm-up estimate only (Baldwin\'s model constants). No pasteurization table applies.';
-      rowNote = 'Baldwin gives medium as 140\u00b0F, medium-rare 120\u00b0F and rare 110\u00b0F for fish, and salmon best at 110 to 120\u00b0F. None of these is pasteurized.';
-      warnings.push(notPast);
-      warnings.push('Raw and lightly cooked fish can carry parasites. Baldwin recommends freezing salmon below \u22124\u00b0F (\u221220\u00b0C) for at least 24 hours first, or pasteurizing it.');
-    }
-  } else if (kind === 'egg') {
-    if (mode === 'standard') {
-      totalSec = 75 * 60; big = 'At least 1 h 15 min in the bath';
-      lines.push('Put whole eggs, in the shell and straight from the fridge, into the <strong>135\u00b0F</strong> bath for at least <strong>1 h 15 min</strong>. This pasteurizes them (Schuman et al. 1997, as given by Baldwin).');
-      lines.push('Keep the bath at 135\u00b0F: hotter starts to set the white. Pasteurized eggs are kept and used like raw eggs, so refrigerate them.');
-      tableName = 'Baldwin, A Practical Guide to Sous Vide Cooking, pasteurized in-shell eggs (Schuman et al. 1997)';
-      rowNote = 'One schedule for whole shell eggs; it does not depend on thickness.';
-      warnings.push(holdWarn);
-    } else {
-      totalSec = 60 * 60; big = '45 minutes to 1 hour in the bath';
-      lines.push('<strong>45 min to 1 hour</strong> at 148\u00b0F gives the custardy "perfect egg" (Baldwin). The plan uses the full hour so it is ready. Crack it and serve right away.');
-      tableName = 'Baldwin, A Practical Guide to Sous Vide Cooking, "perfect egg"';
-      rowNote = 'This is a texture recipe. Baldwin does not describe it as pasteurized.';
-      warnings.push(notPast);
-    }
-  } else {                                        // vegetables: texture guidance
-    const rows = SV_VEG_TIMES[kind], row = rows.find(r => thick <= r[0]);
-    if (!row) return { ok: false, errors: ['That size is outside the guide.'] };
-    totalSec = row[1] * 60; big = 'At least ' + svDur(totalSec) + ' in the bath';
-    lines.push('Cook for <strong>' + esc(svDur(row[1] * 60)) + ' to ' + esc(svDur(row[2] * 60)) + '</strong> for pieces up to ' + row[0] + ' mm (' + (row[0] / 25.4).toFixed(1) + ' in) thick. Shorter stays firmer. Longer keeps softening.');
-    lines.push(kind === 'veg-root' ? 'Root vegetables and squash need a hotter bath than meat: 183\u00b0F for firm-tender, 190\u00b0F for very soft or mashed.' : 'Tender vegetables cook in a 183\u00b0F bath. Thin spears sit at the short end, thick pieces at the long end.');
-    tableName = 'Vegetable time guide (Anova Culinary and Amazing Food Made Easy charts). This is texture guidance, not a safety table.';
-    rowNote = 'The times are for cut pieces starting fridge-cold in a bath at 183\u00b0F. A bath from 180 to 190\u00b0F is allowed.';
-    warnings.push('Cook vegetables in their own bag, apart from meat: they need a hotter bath (Baldwin).');
-    warnings.push('Sealed, cooked vegetables are not sterile. Eat them right away, or chill the sealed bag in ice water and refrigerate it. Do not leave them at room temperature or hold them warm for days.');
-  }
-  const totalMin = Math.ceil(totalSec / 60);
-  return { ok: true, other: true, food, kind, mode, bath, bathC, totalSec, totalMin, big, lines, tableName, rowNote, warnings, thick: needsThick ? thick : null, thickNote: inp.thickNote || '', serve: svServe(inp.serve, totalMin) };
-}
-function svPlanTextOther(p) {
-  const strip = t => t.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&');
-  const out = ['Sous vide plan: ' + p.food.label, 'Bath: ' + p.bath + '\u00b0F (' + p.bathC.toFixed(1) + '\u00b0C)', p.big + '.'].concat(p.lines.map(strip));
-  if (p.serve) out.push('To serve at ' + p.serve.serveText + ', put the bag in the preheated bath by ' + p.serve.startText + ' (includes ' + SV_FINISH_BUFFER_MIN + ' min to finish).');
-  out.push('Source: ' + p.tableName);
-  p.warnings.forEach(w => out.push('Note: ' + w));
-  out.push('Not medical advice. Checked ' + SV_VERIFIED + '.');
-  return out.join('\n');
-}
-function svResultOtherHtml(p) {
-  const warns = p.warnings.map(w => '<p class="sv-warn">' + esc(w) + '</p>').join('');
-  return '<article class="ai-card sv-result"><h3 style="margin:0">Bath at ' + p.bath + '\u00b0F (' + p.bathC.toFixed(1) + '\u00b0C)</h3><div class="sv-big">' + esc(p.big) + '</div>' +
-    '<ul class="sv-steps">' + p.lines.map(l => '<li>' + l + '</li>').join('') + '</ul>' +
-    (p.thickNote ? '<p class="sv-src" style="margin:8px 0 0">' + esc(p.thickNote) + '</p>' : '') +
-    (p.serve ? '<p style="margin:12px 0 0"><strong>To serve at ' + esc(p.serve.serveText) + ':</strong> put the sealed bag into the preheated bath by <strong>' + esc(p.serve.startText) + '</strong>. That includes ' + SV_FINISH_BUFFER_MIN + ' minutes to finish.</p>' + svReminderHtml(p) : '') +
-    warns + '<p class="sv-src" style="margin:12px 0 0">Source: ' + esc(p.tableName) + ' ' + esc(p.rowNote) + '</p><div class="ai-actions"><button class="btn" data-action="sv-copy">Copy plan</button></div></article>';
-}
-// A food you added follows the table of the food you chose, and the result says so.
-function svPlan(inp) {
-  const p = svPlanCore(inp);
-  if (p.ok && p.food.custom) p.warnings = ['This is your own food, "' + p.food.name + '". The planner uses the table for ' + p.food.baseLabel + ', because you chose that. It can not check that your food really behaves like it, so use it only for whole, intact pieces of that kind.'].concat(p.warnings);
-  return p;
-}
-// The whole plan for one set of inputs. Returns { ok: false, errors } or { ok: true, ... }.
-function svPlanCore(inp) {
-  const food = SV_FOODS.find(f => f.id === inp.food);
-  if (!food) return { ok: false, errors: ['Choose a food.'] };
-  if (svIsOther(food.kind)) return svPlanOther(food, inp);
-  const errors = [], warnings = [];
-  const thick = Number(inp.thickMm), bath = Math.round(Number(inp.bathF));
-  if (!inp.probe && !(thick >= SV_MIN_MM && thick <= SV_MAX_MM)) errors.push('Enter the thickness of the thickest part, between ' + SV_MIN_MM + ' mm (0.25 in) and ' + SV_MAX_MM + ' mm (3.5 in). Thicker pieces are not supported.');
-  if (inp.mode !== 'standard' && inp.mode !== 'low') errors.push('Choose a mode.');
-  if (inp.mode === 'low' && !inp.confirm) errors.push('Lower temperatures are only for healthy adults. Tick the box above to confirm, or switch to the USDA standard temperatures.');
-  const min = svMinBath(inp.mode, food.kind);
-  if (!(bath >= min && bath <= SV_MAX_F)) errors.push('In this mode the bath for this food must be between ' + min + '\u00b0F (' + svC(min).toFixed(1) + '\u00b0C) and ' + SV_MAX_F + '\u00b0F.');
-  if (errors.length) return { ok: false, errors };
-
-  const rowF = bath - 1;
-  const hold = svHoldSeconds(food.kind, rowF, food.fat);
-  if (hold === null) return { ok: false, errors: ['That temperature is colder than the USDA table covers.'] };
-  const bathC = svC(bath);
-  const lowWarn = 'Lower temperatures rely on holding the food for the whole time shown. Cooking this way is only for healthy adults. Do not serve it to anyone who is pregnant, over 65, under 5, or has a weakened immune system. For them, use the USDA standard temperatures.';
-  const holdWarn = 'At bath temperatures below 140\u00b0F, take the food out when the time is up and serve it right away. The USDA says cooked food should be held at 140\u00b0F or above until it is served.';
-  if (inp.probe) {                      // a probe in the center replaces the heat-up estimate: no thickness needed
-    const allowance = svAllowance(hold), w = [];
-    if (inp.mode === 'low') w.push(lowWarn);
-    if (bath < 140) w.push(holdWarn);
-    return { ok: true, probe: true, food, mode: inp.mode, bath, bathC, rowF, hold, allowance, holdTotalSec: hold + allowance, tableName: svTableName(food), warnings: w, serve: null };
-  }
-  const cut = bathC > 54.44 ? svHeatUp(thick, bathC, SV_START_C, 54.44) : 0;   // time the centre spends between 40 F and 130 F (counted from the start, so slightly high)
-  if (cut > SV_CUT_LIMIT_S) return { ok: false, errors: ['At ' + bath + '\u00b0F a piece this thick takes too long to warm up (the USDA recommends that food spend no more than 6 hours between 50\u00b0F and 130\u00b0F while heating). Cut it thinner or use a hotter bath.'] };
-  const heat = svHeatUp(thick, bathC, SV_START_C, bathC - 5 / 9);
-  const allowance = svAllowance(hold);
-  const totalSec = heat + hold + allowance, totalMin = Math.ceil(totalSec / 60);
-
-  const isMeat = svIsMeat(food.kind), tableName = svTableName(food);
-  if (inp.mode === 'low') warnings.push(lowWarn);
-  if (bath < 140) warnings.push(holdWarn);
-  if (heat > 4 * 3600) warnings.push('This piece needs a long time just to warm through. The estimate is approximate for thick pieces, so use a thermometer in the center if you can, or cut it thinner.');
-
-  let serve = null;
-  const sm = /^(\d{1,2}):(\d{2})$/.exec(inp.serve || '');
-  if (sm) {
-    const serveMin = Number(sm[1]) * 60 + Number(sm[2]);
-    serve = { serveMin, serveText: svClock(serveMin), startMin: serveMin - totalMin - SV_FINISH_BUFFER_MIN, startText: svClock(serveMin - totalMin - SV_FINISH_BUFFER_MIN), lateText: svClock(serveMin - SV_FINISH_BUFFER_MIN) };
-  }
-  return { ok: true, food, mode: inp.mode, bath, bathC, rowF, hold, heat, allowance, totalSec, totalMin, tableName, warnings, serve, thick, isMeat, thickNote: inp.thickNote || '' };
-}
-
-const SV_SOURCES = [
-  ['USDA FSIS Cooking Guideline for Meat and Poultry Products (Revised Appendix A), December 2021: the time-temperature tables and rules', 'https://www.fsis.usda.gov/guidelines/2021-0014'],
-  ['Canadian Food Inspection Agency, cooked ready-to-eat meat: the table values, derived from USDA Appendix A', 'https://inspection.canada.ca/en/food-safety-industry/preventive-control-plans/meat/cooked-ready-eat'],
-  ['USDA FSIS Safe Minimum Internal Temperature Chart', 'https://www.fsis.usda.gov/food-safety/safe-food-handling-and-preparation/food-safety-basics/safe-temperature-chart'],
-  ['USDA FSIS Leftovers and Food Safety: chilling, storage and reheating', 'https://www.fsis.usda.gov/food-safety/safe-food-handling-and-preparation/food-safety-basics/leftovers-and-food-safety'],
-  ['Douglas Baldwin, A Practical Guide to Sous Vide Cooking: the heat-up model constants, the fish pasteurization table (Table 3.5 in the 2009 draft, 3.1 in later editions), and the pasteurized-egg and "perfect egg" schedules (not a government source)', 'http://www.douglasbaldwin.com/sous-vide.html'],
-  ['Schuman, Sheldon, Vandepopuliere and Ball (1997), Immersion heat treatments for inactivation of Salmonella enteritidis with intact eggs, Journal of Applied Microbiology 83:438-444: the 135\u00b0F shell-egg schedule, as given by Baldwin', 'https://doi.org/10.1046/j.1365-2672.1997.00253.x'],
-  ['Embarek and Huss (1993), Heat resistance of Listeria monocytogenes in vacuum packaged pasteurized fish fillets, International Journal of Food Microbiology 20:85-95: the fish D-values behind the fish table, as given by Baldwin', 'https://pubmed.ncbi.nlm.nih.gov/8286811/'],
-  ['Anova Culinary, sous vide vegetable guide, and Amazing Food Made Easy\'s time and thickness charts: vegetable temperatures and times (texture guidance)', 'https://anovaculinary.com/']
-];
-
-/* ---------- how thick is it? Most people do not know, so there are several ways to answer ---------- */
-// Typical grocery sizes (rough, not a government table). Each option plans for the TOP of its range: a thicker piece only means a longer warm-up.
-const SV_SIZES = {
-  steak:  [['thin', 'Thin: up to \u00be in (20 mm)', 20], ['regular', 'Regular: \u00be to 1\u00bc in (20 to 32 mm)', 32], ['thick', 'Thick: 1\u00bc to 1\u00be in (32 to 45 mm)', 45], ['xthick', 'Very thick: 1\u00be to 2\u00bd in (45 to 65 mm)', 65]],
-  roast:  [['roast-s', 'Tenderloin or small roast: up to 2 in across (50 mm)', 50], ['roast-m', 'Medium roast: 2 to 3 in across (50 to 75 mm)', 75]],
-  breast: [['cutlet', 'Thin cutlet: up to \u00bd in (13 mm)', 13], ['small', 'Small or regular breast: up to 1\u00bc in (32 mm)', 32], ['large', 'Large breast: 1\u00bc to 1\u00be in (32 to 45 mm)', 45], ['xlarge', 'Very large breast: 1\u00be to 2\u00bd in (45 to 65 mm)', 65]],
-  thigh:  [['boneless', 'Boneless thigh: up to 1 in (25 mm)', 25], ['bonein', 'Bone-in thigh or drumstick: about 2 in (50 mm)', 50]]
-};
-SV_SIZES.fish = [['f-thin', 'Thin fillet: up to \u00bd in (13 mm)', 13], ['f-reg', 'Regular fillet: \u00bd to 1 in (13 to 25 mm)', 25], ['f-thick', 'Thick fillet or steak: 1 to 1\u00bd in (25 to 38 mm)', 38], ['f-xthick', 'Very thick: 1\u00bd to 2 in (38 to 50 mm)', 50]];
-SV_SIZES.vegroot = [['vr-s', 'Small pieces or slices: up to 1 in (25 mm)', 25], ['vr-l', 'Large chunks: 1 to 2 in (25 to 50 mm)', 50]];
-SV_SIZES.vegtender = [['vt-thin', 'Thin spears or slices: up to \u00bd in (13 mm)', 13], ['vt-m', 'Florets or pieces: \u00bd to 1 in (13 to 25 mm)', 25], ['vt-l', 'Large pieces: 1 to 2 in (25 to 50 mm)', 50]];
-const SV_FOOD_SIZES = { 'fish-lean': ['fish'], 'fish-fatty': ['fish'], egg: [], 'veg-root': ['vegroot'], 'veg-tender': ['vegtender'], beef: ['steak', 'roast'], pork: ['steak', 'roast'], lamb: ['steak', 'roast'], 'chicken-breast': ['breast'], 'chicken-breast-skin': ['breast'],
-  'chicken-thigh': ['thigh'], 'chicken-skin': ['thigh'], 'turkey-breast': ['breast'], 'turkey-breast-skin': ['breast'], 'turkey-thigh': ['thigh'], 'other-poultry': ['breast', 'thigh'] };
-const SV_UNSURE_MM = { meat: 45, breast: 45, thigh: 50, other: 50 };
-const svSizesFor = foodId => [].concat(...(foodId in SV_FOOD_SIZES ? SV_FOOD_SIZES[foodId] : ['steak']).map(g => SV_SIZES[g]));
-function svUnsureMm(food) {
-  if (svIsOther(food.kind)) return 50;
-  if (svIsMeat(food.kind)) return SV_UNSURE_MM.meat;
-  return food.id === 'other-poultry' ? SV_UNSURE_MM.other : /thigh|chicken-skin/.test(food.id) ? SV_UNSURE_MM.thigh : SV_UNSURE_MM.breast;
-}
-
-ui.sv = { mode: 'standard', confirm: false, food: 'beef', size: 'regular', thick: '25', unit: 'mm', bath: '146', serve: '', photo: null, fromPhoto: null,
-          ai: { busy: false, err: '', ideas: null, chat: [], q: '', ctl: null } };
-/* ---------- quick picks, remembered settings, calendar reminder ---------- */
-// Common choices in one tap. Lower-temperature picks still make you tick the healthy-adults box each time.
-const SV_PRESETS = [
-  { id: 'steak-mr', label: 'Steak, medium-rare', food: 'beef', size: 'regular', bath: 135, mode: 'low' },
-  { id: 'steak-m', label: 'Steak, medium', food: 'beef', size: 'regular', bath: 140, mode: 'low' },
-  { id: 'steak-usda', label: 'Steak, USDA standard', food: 'beef', size: 'regular', bath: 146, mode: 'standard' },
-  { id: 'pork-chop', label: 'Pork chop, juicy', food: 'pork', size: 'regular', bath: 140, mode: 'low' },
-  { id: 'lamb-mr', label: 'Lamb chop, medium-rare', food: 'lamb', size: 'regular', bath: 135, mode: 'low' },
-  { id: 'chicken-juicy', label: 'Chicken breast, juicy', food: 'chicken-breast', size: 'small', bath: 145, mode: 'low' },
-  { id: 'chicken-usda', label: 'Chicken breast, USDA standard', food: 'chicken-breast', size: 'small', bath: 166, mode: 'standard' },
-  { id: 'thigh-usda', label: 'Chicken thigh, USDA standard', food: 'chicken-thigh', size: 'boneless', bath: 166, mode: 'standard' },
-  { id: 'turkey-usda', label: 'Turkey breast, USDA standard', food: 'turkey-breast', size: 'large', bath: 166, mode: 'standard' },
-  { id: 'salmon-past', label: 'Salmon, pasteurized', food: 'fish-fatty', size: 'f-reg', bath: 141, mode: 'standard' },
-  { id: 'cod-past', label: 'Cod, pasteurized', food: 'fish-lean', size: 'f-reg', bath: 141, mode: 'standard' },
-  { id: 'salmon-mr', label: 'Salmon, medium-rare', food: 'fish-fatty', size: 'f-reg', bath: 120, mode: 'low' },
-  { id: 'egg-past', label: 'Eggs, pasteurized', food: 'egg', size: 'regular', bath: 135, mode: 'standard' },
-  { id: 'egg-perfect', label: 'Soft-set egg (perfect egg)', food: 'egg', size: 'regular', bath: 148, mode: 'low' },
-  { id: 'carrots', label: 'Carrots, potatoes, beets', food: 'veg-root', size: 'vr-s', bath: 183, mode: 'standard' },
-  { id: 'asparagus', label: 'Asparagus, broccoli, green beans', food: 'veg-tender', size: 'vt-m', bath: 183, mode: 'standard' }
-];
-function svApplyPreset(id) {
-  const p = SV_PRESETS.find(x => x.id === id);
-  if (!p) return;
-  Object.assign(ui.sv, { food: p.food, size: p.size, bath: String(p.bath), mode: p.mode, fromPhoto: null, photo: null });
-  svFixSize(); svRemember(); render();
-}
-// Remembered between visits and devices: the food, the mode and the bath, and only the two safe size choices. Never the thickness
-// (a stale one could under-time the next piece) and never the healthy-adults confirmation (that is a fresh decision each cook).
-function cleanSV(o) {
-  if (!o || typeof o !== 'object') return null;
-  const food = SV_FOODS.find(f => f.id === o.food);
-  if (!food) return null;
-  const mode = o.mode === 'low' ? 'low' : 'standard';
-  let bath = Math.round(Number(o.bath));
-  if (!(bath >= svMinBath(mode, food.kind) && bath <= svMaxBath(mode, food.kind))) bath = svDefaultBath(mode, food.kind);
-  const out = { mode, food: food.id, bath: String(bath) };
-  if ((o.size === 'probe' && !svIsOther(food.kind)) || o.size === 'unsure') out.size = o.size;
-  return out;
-}
-function svHydrate(o) {
-  const c = cleanSV(o);
-  if (!c) return;
-  Object.assign(ui.sv, { mode: c.mode, food: c.food, bath: c.bath });
-  ui.sv.size = c.size || 'regular';
-  svFixSize(); svFixBath();
-}
-function svRemember() {
-  const S = ui.sv, mem = { mode: S.mode, food: S.food, bath: S.bath };
-  if (S.size === 'probe' || S.size === 'unsure') mem.size = S.size;
-  state.sv = mem;
-  saveState();
-}
-
-// A calendar reminder for when to put the bag in. If that time has already passed today, it says so and offers tomorrow.
-function svReminder(p, now) {
-  if (!p || !p.ok || p.probe || !p.serve) return null;
-  now = now || new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
-  const tooLate = p.serve.startMin < nowMin;
-  const at = m => new Date(now.getFullYear(), now.getMonth(), now.getDate() + (tooLate ? 1 : 0), 0, Math.round(m), 0);
-  const start = at(p.serve.startMin), end = at(p.serve.startMin + p.totalMin);
-  const pad2 = n => String(n).padStart(2, '0');
-  const stamp = d => d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + pad2(d.getMinutes()) + '00';
-  const title = 'Sous vide: put the ' + (p.food.short || 'food') + ' in the bath';
-  const details = ('Bath at ' + p.bath + '\u00b0F, already at temperature. ' + svPlanText(p)).slice(0, 900);
-  const url = 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent(title) + '&dates=' + stamp(start) + '/' + stamp(end) + '&details=' + encodeURIComponent(details);
-  return { tooLate, start, end, startText: svClock(p.serve.startMin), earliestText: svClock(Math.ceil(nowMin) + p.totalMin + SV_FINISH_BUFFER_MIN), url, title,
-           copyText: title + ' at ' + svClock(p.serve.startMin) + (tooLate ? ' (tomorrow)' : '') + '. Bath at ' + p.bath + '\u00b0F, preheated. Take it out no earlier than ' + svClock(p.serve.startMin + p.totalMin) + '.' };
-}
-function svReminderHtml(p) {
-  const r = svReminder(p);
-  if (!r) return '';
-  return (r.tooLate ? '<p class="sv-warn" style="margin:12px 0 0">It is too late to start for ' + esc(p.serve.serveText) + ' today. Starting now, the earliest you could serve is <strong>' + esc(r.earliestText) + '</strong>. The reminder below is set for tomorrow.</p>' : '') +
-    '<div class="ai-actions"><a class="btn" href="' + esc(r.url) + '" target="_blank" rel="noopener noreferrer">Add to Google Calendar</a><button class="btn" data-action="sv-copy-remind">Copy reminder text</button></div>' +
-    '<p class="sv-src" style="margin:4px 0 0">Opens a prefilled event for when to put the bag in. Apple Calendar can not be filled from a link, so copy the reminder text instead.</p>';
-}
-
-
-const svFoodNow = () => SV_FOODS.find(f => f.id === ui.sv.food) || SV_FOODS[0];
-const svKind = () => svFoodNow().kind;
-// The thickness the plan uses, and how we got it.
-function svThickInfo() {
-  const S = ui.sv, food = svFoodNow();
-  if (S.size === 'probe') return { probe: true, mm: null, note: '' };
-  if (S.size === 'unsure') { const mm = svUnsureMm(food); return { mm, note: 'You were not sure of the thickness, so the plan assumes a thick piece (' + mm + ' mm, ' + (mm / 25.4).toFixed(1) + ' in). That only makes the time longer.' }; }
-  if (S.size === 'exact') {
-    const mm = S.unit === 'in' ? Number(S.thick) * 25.4 : Number(S.thick);
-    return { mm, note: S.fromPhoto ? 'Thickness estimated from a photo by Claude (about ' + S.fromPhoto.lo + ' to ' + S.fromPhoto.hi + ' mm). The plan uses ' + Math.round(mm) + ' mm, the upper end plus a margin.' : 'Thickness you entered.' };
-  }
-  const opt = svSizesFor(food.id).find(o => o[0] === S.size);
-  return opt ? { mm: opt[2], note: 'Size chosen: ' + opt[1] + '. The plan uses the top of that range (' + opt[2] + ' mm).' } : { mm: NaN, note: '' };
-}
-function svInputs() {
-  const t = svThickInfo();
-  return { food: ui.sv.food, mode: ui.sv.mode, confirm: ui.sv.confirm, thickMm: t.mm, probe: !!t.probe, thickNote: t.note, bathF: ui.sv.bath, serve: ui.sv.serve };
-}
-function svFixBath() {
-  const min = svMinBath(ui.sv.mode, svKind()), cur = Number(ui.sv.bath);
-  if (!(cur >= min && cur <= svMaxBath(ui.sv.mode, svKind()))) ui.sv.bath = String(svDefaultBath(ui.sv.mode, svKind()));
-}
-function svFixSize() {      // keep a special choice; otherwise make sure the size fits this food (default: regular, or the larger of two)
-  if (svIsOther(svKind()) && ui.sv.size === 'probe') ui.sv.size = 'regular';     // no probe schedule for fish, eggs or vegetables
-  if (['exact', 'unsure', 'probe'].includes(ui.sv.size)) return;
-  const list = svSizesFor(ui.sv.food);
-  if (!list.length) return;
-  if (!list.some(o => o[0] === ui.sv.size)) ui.sv.size = list[svKind() === 'veg-root' ? 0 : Math.min(1, list.length - 1)][0];
-}
-
-function svPlanText(p) {
-  if (p.other) return svPlanTextOther(p);
-  const lines = ['Sous vide plan: ' + p.food.label, 'Bath: ' + p.bath + '\u00b0F (' + p.bathC.toFixed(1) + '\u00b0C)'];
-  if (p.probe) {
-    lines.push('Probe in the center of the thickest part. Start the timer when it reads ' + p.rowF + '\u00b0F or more, then hold for ' + svDur(p.holdTotalSec) + (p.hold > 0 ? ' (' + svDur(p.hold) + ' from the USDA table' + (p.allowance ? ' plus ' + svDur(p.allowance) + ' for measurement error' : '') + ').' : ': no hold needed.'));
-  } else {
-    lines.push('Thickness used: ' + p.thick.toFixed(0) + ' mm. ' + p.thickNote);
-    lines.push('Leave in for at least ' + svDur(p.totalSec) + ': about ' + svDur(p.heat) + ' for the center to warm up (estimate), ' + (p.hold > 0 ? svDur(p.hold) + ' held at temperature (USDA table)' : 'no hold needed at this temperature') + (p.allowance ? ', plus ' + svDur(p.allowance) + ' for measurement error' : '') + '.');
-    if (p.serve) lines.push('To serve at ' + p.serve.serveText + ', put the bag in the preheated bath by ' + p.serve.startText + ' (includes ' + SV_FINISH_BUFFER_MIN + ' min to finish).');
-  }
-  lines.push('Table: ' + p.tableName + ', ' + p.rowF + '\u00b0F row.');
-  p.warnings.forEach(w => lines.push('Note: ' + w));
-  lines.push('Not medical advice. Numbers come from USDA FSIS tables, checked ' + SV_VERIFIED + '.');
-  return lines.join('\n');
-}
-
-function svResultHtml(p) {
-  if (!p.ok) return '<div class="ai-error" role="alert">' + p.errors.map(esc).join('<br>') + '</div>';
-  if (p.other) return svResultOtherHtml(p);
-  const rowNote = 'The USDA tables give the time at a given internal temperature. This planner counts the hold from when the coldest point is within 1\u00b0F of the bath, so it uses the ' + p.rowF + '\u00b0F row for a ' + p.bath + '\u00b0F bath, which errs on the safe side.';
-  const foot = '<p class="sv-src" style="margin:12px 0 0">Table used: ' + esc(p.tableName) + ', ' + p.rowF + '\u00b0F row. ' + esc(rowNote) + '</p><div class="ai-actions"><button class="btn" data-action="sv-copy">Copy plan</button></div></article>';
-  const warns = p.warnings.map(w => '<p class="sv-warn">' + esc(w) + '</p>').join('');
-  if (p.probe) {
-    return '<article class="ai-card sv-result"><h3 style="margin:0">Bath at ' + p.bath + '\u00b0F (' + p.bathC.toFixed(1) + '\u00b0C), probe in the center</h3>' +
-      '<div class="sv-big">' + (p.hold > 0 ? 'Hold ' + esc(svDur(p.holdTotalSec)) + ' once the center reads ' + p.rowF + '\u00b0F' : 'Ready as soon as the center reads ' + p.rowF + '\u00b0F') + '</div>' +
-      '<ol class="sv-steps"><li>Put the probe in the <strong>center of the thickest part</strong> before the bag goes in the bath, and keep the bag sealed and fully under water.</li>' +
-      '<li>Start the timer when the probe reads <strong>' + p.rowF + '\u00b0F or more</strong>. If your thermometer is only accurate to within 2\u00b0F, wait until it reads ' + (p.rowF + 2) + '\u00b0F, as the USDA advises adding the thermometer\'s error to the target.</li>' +
-      (p.hold > 0 ? '<li>Keep it at temperature for <strong>' + esc(svDur(p.holdTotalSec)) + '</strong> (' + esc(svDur(p.hold)) + ' from the USDA table' + (p.allowance ? ', plus ' + esc(svDur(p.allowance)) + ' for measurement error' : '') + ').</li>' : '<li>No hold is needed at this temperature: the USDA table shows the required kill is reached immediately.</li>') +
-      '<li>If the center is still below 130\u00b0F after 5 hours, this piece is too thick for this bath. The USDA recommends no more than 6 hours between 50\u00b0F and 130\u00b0F while heating, so when in doubt, throw it out.</li></ol>' + warns + foot;
-  }
-  return '<article class="ai-card sv-result"><h3 style="margin:0">Bath at ' + p.bath + '\u00b0F (' + p.bathC.toFixed(1) + '\u00b0C)</h3>' +
-    '<div class="sv-big">At least ' + esc(svDur(p.totalSec)) + ' in the bath</div>' +
-    '<ul class="sv-steps">' +
-    '<li>About <strong>' + esc(svDur(p.heat)) + '</strong> for the center to come up to temperature. This is an estimate for a fridge-cold piece ' + p.thick.toFixed(0) + ' mm (' + (p.thick / 25.4).toFixed(1) + ' in) thick.</li>' +
-    '<li>' + (p.hold > 0 ? '<strong>' + esc(svDur(p.hold)) + '</strong> held at temperature, from the USDA table.' : '<strong>No hold needed</strong> at this temperature: the USDA table shows the required kill is reached immediately.') + '</li>' +
-    (p.allowance ? '<li><strong>' + esc(svDur(p.allowance)) + '</strong> extra for measurement error.</li>' : '') + '</ul>' +
-    (p.thickNote ? '<p class="sv-src" style="margin:8px 0 0">' + esc(p.thickNote) + '</p>' : '') +
-    (p.serve ? '<p style="margin:12px 0 0"><strong>To serve at ' + esc(p.serve.serveText) + ':</strong> put the sealed bag into the preheated bath by <strong>' + esc(p.serve.startText) + '</strong>. That includes ' + SV_FINISH_BUFFER_MIN + ' minutes to sear or finish.</p>' + svReminderHtml(p) : '') +
-    warns + foot;
-}
-
-/* ---------- the Claude helpers: they may suggest, but they can never set a time or temperature ---------- */
-// Any sentence that mentions a temperature, a long duration, safety, storage, chilling, reheating, bacteria or the bath is removed
-// from what Claude writes. What is left is flavor, texture, searing and seasoning.
-const SV_FORBIDDEN = /(\d\s*\u00b0|\u00b0\s*[fc]\b|\bdegrees?\b|\b\d+(?:\.\d+)?\s?[fc]\b|\bhours?\b|\bhrs?\b|\bovernight\b|\bdays?\b|\bsafe\w*|\bunsafe\b|\bbacteri\w*|\bsalmonella\b|\blisteria\b|\bbotulis\w*|\bpathogen\w*|\billness\b|\bsick\b|\bpasteuri\w*|\bbath\b|\bchill\w*|\brefrigerat\w*|\bfridge\b|\breheat\w*|\bleftover\w*|\bstor(?:e|ed|age)\b|\bthaw\w*|\bfroze\w*|\bfreez\w*|\bundercook\w*|\braw\b|\bdanger\w*|\btemperatures?\b|\bhold(?:ing)?\b)/i;
-function svClean(text) {
-  const parts = String(text || '').match(/[^.!?\n]+[.!?]*/g) || [];
-  const keep = parts.filter(p => !SV_FORBIDDEN.test(p)).map(p => p.trim()).filter(Boolean);
-  return { text: keep.join(' '), dropped: keep.length < parts.map(p => p.trim()).filter(Boolean).length };
-}
-const SV_SAFETY_Q = /(\bsafe\w*|\bunsafe\b|\bsafety\b|\bbacteri\w*|\bsalmonella\b|\blisteria\b|\bbotulis\w*|\bsick\b|\billness\b|\bpregnan\w*|\bimmun\w*|\breheat\w*|\bleftover\w*|\bstor(?:e|ed|age)\b|\bfridge\b|\brefrigerat\w*|\bfreez\w*|\bthaw\w*|\bhours?\b|\bovernight\b|\bdegrees?\b|\u00b0|\bbath\b|\bpasteuri\w*|\bhold\w*|\bdanger\w*)/i;
-const SV_HOTLINE = 'That is a question about food safety, times or temperatures, which this helper can not answer. Use the numbers in the planner, or ask the USDA Meat and Poultry Hotline: 1-888-MPHotline (1-888-674-6854), or chat at ask.usda.gov.';
-const svCanAI = () => AI.status === 'ready' && !!AI.sample;
-const svCanPhoto = () => svCanAI() && SCAN.canImages;
-
-async function svAI(prompt, opts) {
-  const ai = ui.sv.ai, ctl = new AbortController(); ai.ctl = ctl;
-  Object.assign(ai, { busy: true, err: '' }); render();
-  try { return await AI.sample.json(prompt, Object.assign({ modelTier: 'default', cache: false, signal: ctl.signal }, opts || {})); }
-  finally { ai.busy = false; ai.ctl = null; }
-}
-const svAIError = e => e && e.code === 'cancelled' ? 'Stopped.' : e && e.code === 'rate_limited' ? 'Too many requests, or your Claude usage limit was reached. Try again later.' : e && e.code === 'refused' ? 'Claude could not help with that. Try wording it differently.' : 'That did not work. Try again.';
-
-async function svIdeas() {
-  if (!svCanAI() || ui.sv.ai.busy) return;
-  const food = svFoodNow();
-  try {
-    const d = await svAI('You help a home cook finish a sous vide ' + JSON.stringify(food.label) + ' (' + (svIsOther(food.kind) ? 'cooked sous vide' : ui.sv.mode === 'standard' ? 'cooked well done in the USDA standard way' : 'cooked at a lower temperature') + '). ' +
-      'The app has already worked out ALL safety, times and temperatures. Do NOT mention any temperature, cooking or holding time, the bath, safety, storage, chilling, reheating, thawing or bacteria. ' +
-      'Talk only about searing (in words, like "until deeply browned"), seasoning, sauces, resting, and serving. Give exactly 3 different ideas in the shape ' +
-      '{"ideas": [{"title": "short name", "seasoning": "one or two sentences", "sear": "one or two sentences", "serve": "one or two sentences"}]}. Reply with only JSON.');
-    const list = (Array.isArray(d && d.ideas) ? d.ideas : []).slice(0, 3).map(x => {
-      const f = k => svClean(x && x[k]);
-      const t = f('title'), se = f('seasoning'), sr = f('sear'), sv = f('serve');
-      return { title: t.text.slice(0, 80), seasoning: se.text.slice(0, 300), sear: sr.text.slice(0, 300), serve: sv.text.slice(0, 300), dropped: t.dropped || se.dropped || sr.dropped || sv.dropped };
-    }).filter(x => x.title && (x.seasoning || x.sear || x.serve));
-    if (!list.length) throw new Error('empty');
-    ui.sv.ai.ideas = list;
-  } catch (e) { ui.sv.ai.err = svAIError(e); }
-  render();
-}
-
-async function svAsk() {
-  const ai = ui.sv.ai, q = ai.q.trim().slice(0, 300);
-  if (!svCanAI() || ai.busy || !q) return;
-  ai.chat.push({ role: 'you', text: q }); ai.q = '';
-  if (SV_SAFETY_Q.test(q)) { ai.chat.push({ role: 'app', text: SV_HOTLINE }); render(); return; }
-  const history = ai.chat.filter(m => m.role !== 'app').slice(-7, -1).map(m => (m.role === 'you' ? 'Cook: ' : 'Helper: ') + m.text).join('\n');
-  try {
-    const d = await svAI('You answer a home cook\'s questions about FLAVOR, TEXTURE, SEARING, SEASONING and TECHNIQUE for sous vide ' + JSON.stringify(svFoodNow().label) + '. ' +
-      'If the question is about food safety, times, temperatures, chilling, storage, reheating, thawing, illness, whether something is done or safe to eat, or anything the cook should look up in a safety table, reply with only {"safety": true}. ' +
-      'Otherwise reply with only {"answer": "..."}: one to three short paragraphs. Never mention a temperature, a cooking or holding time, the bath, or safety.\n' +
-      (history ? 'Earlier in this chat:\n' + history + '\n' : '') + 'Cook\'s question: ' + JSON.stringify(q));
-    if (d && d.safety === true) ai.chat.push({ role: 'app', text: SV_HOTLINE });
-    else {
-      const c = svClean(d && d.answer);
-      if (!c.text) ai.chat.push({ role: 'app', text: 'I can only help with flavor, texture, searing and seasoning here. For anything about times, temperatures or safety, use the planner or the USDA Meat and Poultry Hotline: 1-888-MPHotline (1-888-674-6854).' });
-      else ai.chat.push({ role: 'helper', text: c.text.slice(0, 1200), dropped: c.dropped });
-    }
-  } catch (e) { ai.chat.push({ role: 'app', text: svAIError(e) }); }
-  render();
-}
-
-// Estimating thickness from a photo. Claude only estimates a size; the app validates it, uses the UPPER end plus a margin, and asks first.
-const SV_PHOTO_PROMPT = 'This photo is meant to show a piece of raw meat or poultry from the SIDE, with a known object beside it for scale: a credit card (85.6 mm long, 54 mm wide), a US quarter (24.3 mm across), or a ruler. ' +
-  'Estimate the thickness of the THICKEST part of the food in millimetres, using the known object to set the scale. Reply with only JSON: ' +
-  '{"reference": "credit card" or "us quarter" or "ruler" or "none" (what you used for scale), "thickness_mm_low": number, "thickness_mm_best": number, "thickness_mm_high": number, "confidence": "high" or "medium" or "low", "note": "one short sentence"}. ' +
-  'If there is no known object for scale, or you cannot see the side of the food clearly, use "none" and "low" and put null for the numbers. Never guess.';
-function svParseEstimate(d) {
-  const n = x => (typeof x === 'number' && isFinite(x)) ? x : null;
-  const lo = n(d && d.thickness_mm_low), best = n(d && d.thickness_mm_best), hi = n(d && d.thickness_mm_high);
-  if (!d || !d.reference || d.reference === 'none' || d.confidence === 'low' || lo === null || best === null || hi === null || !(lo <= best && best <= hi) || lo < 3 || hi > 150 || hi > lo * 1.6) throw new Error('unclear');
-  const use = Math.ceil(hi * 1.1);
-  return { lo: Math.round(lo), best: Math.round(best), hi: Math.round(hi), use, tooThick: use > SV_MAX_MM, reference: String(d.reference).slice(0, 30), note: String(d.note || '').slice(0, 200) };
-}
-async function svEstimatePhoto(file) {
-  if (!file || !svCanPhoto() || ui.sv.ai.busy) return;
-  ui.sv.photo = null;
-  try {
-    const d = await svAI(SV_PHOTO_PROMPT, { images: file, modelTier: 'default' });
-    ui.sv.photo = svParseEstimate(d);
-  } catch (e) { ui.sv.ai.err = e && e.code ? svAIError(e) : 'I could not measure that photo. Stand a credit card or a quarter next to the piece, photograph it from the side at counter level, and try again. Or pick a size, or use a ruler.'; }
-  render();
-}
-
-/* ---------- the screen ---------- */
-function svAIHtml(p) {
-  if (!svCanAI()) return '';
-  const ai = ui.sv.ai;
-  const ideas = ai.ideas ? '<div class="ai-card" style="margin-top:12px">' + ai.ideas.map(x => '<p style="margin:0 0 4px"><strong>' + esc(x.title) + '</strong></p><ul class="sv-steps">' +
-    (x.seasoning ? '<li><em>Seasoning:</em> ' + esc(x.seasoning) + '</li>' : '') + (x.sear ? '<li><em>Searing:</em> ' + esc(x.sear) + '</li>' : '') + (x.serve ? '<li><em>Serving:</em> ' + esc(x.serve) + '</li>' : '') + '</ul>').join('') +
-    (ai.ideas.some(x => x.dropped) ? '<p class="sv-src" style="margin:8px 0 0">Anything about times, temperatures or safety was removed. Use the planner for those.</p>' : '') + '</div>' : '';
-  const chat = ai.chat.length ? '<div class="ai-card" style="margin-top:12px">' + ai.chat.map(m => '<p style="margin:0 0 8px"><strong>' + (m.role === 'you' ? 'You' : m.role === 'app' ? 'Note' : 'Helper') + ':</strong> ' + esc(m.text) + '</p>').join('') + '</div>' : '';
-  return '<h3>Finishing and questions (uses Claude)</h3>' +
-    '<p class="muted small" style="margin:0">Claude can suggest ways to sear, season and serve, and answer questions about texture and technique. It cannot set or change any time or temperature, and anything it says about times, temperatures or safety is removed.</p>' +
-    '<div class="ai-run"><button class="btn primary" data-action="sv-ideas"' + (ai.busy ? ' disabled' : '') + '>' + (p.ok ? 'Finishing ideas for this cook' : 'Finishing ideas') + '</button>' +
-    (ai.busy ? '<span role="status">Thinking\u2026</span><button class="link" data-action="sv-stop">Stop</button>' : '') + '</div>' + ideas +
-    '<label for="svQ">Ask about texture, searing or seasoning</label><div class="scan-typerow"><input id="svQ" data-sv="q" maxlength="300" autocomplete="off" placeholder="Why is my chicken stringy?" value="' + esc(ai.q) + '"><button class="btn" data-action="sv-ask"' + (ai.busy ? ' disabled' : '') + '>Ask</button></div>' +
-    (ai.err ? '<p class="ai-error" role="alert">' + esc(ai.err) + '</p>' : '') + chat;
-}
-
-function svHtml() {
-  const S = ui.sv, food = svFoodNow(), kind = food.kind, min = svMinBath(S.mode, kind);
-  const mine = SV_FOODS.filter(f => f.custom), std = SV_FOODS.filter(f => !f.custom);
-  const groups = [['Meat (whole, intact pieces)', std.filter(f => f.kind === 'meat')], ['Poultry', std.filter(f => ['chicken', 'turkey', 'poultry'].includes(f.kind))],
-    ['Fish (whole fillets)', std.filter(f => svIsFish(f.kind))], ['Eggs', std.filter(f => f.kind === 'egg')], ['Vegetables', std.filter(f => svIsVeg(f.kind))]].concat(mine.length ? [['Your foods', mine]] : []);
-  const p = svPlan(svInputs());
-  const sizes = svSizesFor(food.id);
-  const sizeOpts = sizes.map(o => '<option value="' + o[0] + '"' + (S.size === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('') +
-    '<option value="exact"' + (S.size === 'exact' ? ' selected' : '') + '>I know the exact thickness</option>' +
-    '<option value="unsure"' + (S.size === 'unsure' ? ' selected' : '') + '>Not sure (the plan assumes a thick piece)</option>' +
-    (svIsOther(kind) ? '' : '<option value="probe"' + (S.size === 'probe' ? ' selected' : '') + '>I will use a probe thermometer (no thickness needed)</option>');
-  const exact = S.size === 'exact' ? '<div class="scan-typerow" style="margin-top:8px"><input id="svThick" data-sv="thick" type="number" inputmode="decimal" min="0" step="any" value="' + esc(S.thick) + '" aria-label="Thickness"><select data-sv="unit" aria-label="Thickness unit" style="max-width:90px"><option value="mm"' + (S.unit === 'mm' ? ' selected' : '') + '>mm</option><option value="in"' + (S.unit === 'in' ? ' selected' : '') + '>in</option></select></div>' : '';
-  const photo = svCanPhoto() && S.size !== 'probe' ? '<div class="ai-actions" style="margin-top:8px"><label class="btn" for="svPhoto">Estimate from a photo (Claude)</label><input type="file" id="svPhoto" data-sv="photo" accept="image/*" capture="environment" class="sr-only"></div>' : '';
-  const est = S.photo ? '<div class="ai-card" style="margin-top:8px"><strong>Claude\'s estimate:</strong> about ' + S.photo.best + ' mm (between ' + S.photo.lo + ' and ' + S.photo.hi + ' mm), using the ' + esc(S.photo.reference) + ' for scale. ' +
-    (S.photo.tooThick ? 'That is thicker than this planner supports (' + SV_MAX_MM + ' mm).' : 'The planner would use <strong>' + S.photo.use + ' mm</strong>, the upper end plus a margin, to be safe. Photo estimates can be off, so a ruler is better if you have one.') + (S.photo.note ? ' ' + esc(S.photo.note) : '') +
-    '<div class="ai-actions">' + (S.photo.tooThick ? '' : '<button class="btn primary" data-action="sv-photo-use">Use ' + S.photo.use + ' mm</button>') + '<button class="btn" data-action="sv-photo-drop">Discard</button></div></div>' : '';
-  return '<div class="sv"><h2 style="font-size:1.25rem">Sous vide cook planner</h2>' +
-    '<p class="muted" style="margin:6px 0 0">Times and temperatures for whole, intact cuts of meat, poultry and fish, for eggs, and for vegetables. Meat and poultry come from the USDA\'s tables and fish and eggs from Douglas Baldwin\'s published tables. Vegetable times are texture guidance. None of it comes from AI. The optional Claude helpers below can suggest ideas or estimate a size, but they cannot set a time or temperature.</p>' +
-    (svIsOther(food.kind) ? svModeOtherHtml(S, food) :     '<div class="ai-tools" role="group" aria-label="Temperature mode" style="margin-top:14px">' +
-    '<button data-action="sv-mode" data-mode="standard" aria-pressed="' + (S.mode === 'standard') + '">USDA standard temperatures</button>' +
-    '<button data-action="sv-mode" data-mode="low" aria-pressed="' + (S.mode === 'low') + '">Lower temperatures</button></div>' +
-    (S.mode === 'standard'
-      ? '<p class="muted small" style="margin:8px 0 0">Beef, pork and lamb at 145\u00b0F or more, poultry at 165\u00b0F or more: the temperatures on the USDA\'s safe minimum chart. Best for everyone, including anyone pregnant, over 65, under 5, or with a weakened immune system.</p>'
-      : '<div class="sv-warn"><strong>Lower temperatures are riskier.</strong> They are safe only if the food is held at temperature for the full time. This is for healthy adults only. <label class="keep" style="margin-top:8px"><input type="checkbox" data-sv="confirm"' + (S.confirm ? ' checked' : '') + '> Everyone eating this is a healthy adult: nobody is pregnant, over 65, under 5, or has a weakened immune system.</label></div>')) +
-    '<p class="muted small" style="margin:12px 0 4px">Quick picks: tap one to fill everything in.' + (S.mode === 'standard' ? '' : ' Lower-temperature picks still ask you to confirm below.') + '</p>' +
-    '<div class="quick-chips" role="group" aria-label="Quick picks">' + SV_PRESETS.map(pr => '<button class="chip-btn" data-action="sv-preset" data-id="' + pr.id + '" aria-pressed="' + (S.food === pr.food && S.size === pr.size && Number(S.bath) === pr.bath && S.mode === pr.mode) + '">' + esc(pr.label) + '</button>').join('') + '</div>' +
-    '<div class="ai-row" style="margin-top:12px">' +
-    '<div><label for="svFood">Food</label><select id="svFood" data-sv="food">' + groups.map(([g, list]) => '<optgroup label="' + esc(g) + '">' + list.map(f => '<option value="' + f.id + '"' + (f.id === S.food ? ' selected' : '') + '>' + esc(f.label) + '</option>').join('') + '</optgroup>').join('') + '</select></div>' +
-    '<div><label for="svBath">Bath temperature (\u00b0F)</label><input id="svBath" data-sv="bath" type="number" inputmode="numeric" step="1" min="' + min + '" max="' + svMaxBath(S.mode, kind) + '" value="' + esc(S.bath) + '"><span class="muted small">Lowest allowed: ' + min + '\u00b0F (' + svC(min).toFixed(1) + '\u00b0C)</span></div></div>' +
-    (kind === 'egg' ? '<p class="muted small" style="margin:8px 0 0">Eggs use one schedule, so there is no thickness to enter.</p>' : '<div style="margin-top:8px"><label for="svSize">How thick is the ' + (svIsVeg(kind) ? 'largest piece' : 'thickest part') + '?</label><select id="svSize" data-sv="size">' + sizeOpts + '</select>' + exact + photo + est + '</div>') +
-    svCustomHtml() +
-    (S.size === 'probe' ? '' : '<div style="margin-top:8px"><label for="svServe">Serve at (optional)</label><input id="svServe" data-sv="serve" type="time" value="' + esc(S.serve) + '" style="max-width:200px"></div>') +
-    '<details><summary>Not sure how thick it is? Ways to find out</summary><ul class="sv-steps">' +
-    '<li><strong>Pick the nearest size</strong> from the list. Each size plans for the top of its range, so a guess on the high side is safe. It only makes the time longer.</li>' +
-    '<li><strong>Lay a ruler or tape measure</strong> beside the piece on the counter, on its side, and read the thickest part.</li>' +
-    '<li><strong>Skewer trick:</strong> push a skewer or toothpick straight down through the thickest part until it touches the board, pinch where it meets the top, and measure that length.</li>' +
-    '<li><strong>Ask the butcher</strong> to cut steaks to an exact thickness, such as 1 inch, so you know it every time.</li>' +
-    '<li><strong>Use a probe thermometer</strong> and choose that option. It needs no thickness at all and is the most reliable way.</li>' +
-    '<li>If your food is <strong>uneven</strong> (a tapered breast), measure the thickest point, or fold the thin end under or pound it flat.</li></ul></details>' +
-    svResultHtml(p) + svAIHtml(p) +
-    '<h3>Every time</h3><ul class="sv-steps">' +
-    '<li><strong>Start fridge-cold and fully thawed.</strong> Never frozen or partly frozen: the USDA has linked partly frozen product to undercooking.</li>' +
-    '<li><strong>Preheat the bath, then add sealed bags fully under water.</strong> Never stack or overlap bags: the USDA has linked stacked bags to undercooking.</li>' +
-    '<li><strong>Check the bath with a thermometer,</strong> not just the dial. If you can, probe the center of the food.</li>' +
-    '<li><strong>Serve right away,</strong> or chill the sealed bag in ice water at once and refrigerate. The USDA says to refrigerate within 2 hours (1 hour if the air is above 90\u00b0F), eat within 3 to 4 days, and reheat leftovers to 165\u00b0F.</li></ul>' +
-    '<details><summary>What this planner does not cover</summary><ul class="sv-steps">' +
-    '<li>Ground or minced meat, burgers, and sausages (the USDA sets 160\u00b0F for ground meat).</li>' +
-    '<li>Meat that was injected, needle-tenderized, stuffed, or rolled.</li>' +
-    '<li>Shellfish, and fish that is ground, cured or raw for sushi. Pasteurizing does not remove the risk of hepatitis A or norovirus from shellfish.</li>' +
-    '<li>Wild game and rabbit. Eggs other than whole, in-shell eggs.</li>' +
-    '<li>Vegetable times are texture guidance, not a safety table.</li>' +
-    '<li>Whole birds, pieces thicker than 3.5 in, and food cooked from frozen.</li>' +
-    '<li>Reheating and long storage: the tables cover cooking from raw only. The USDA rule for leftovers is to reheat to 165\u00b0F.</li></ul></details>' +
-    '<details><summary>Where the numbers come from</summary><p class="sv-src">Hold times are the USDA FSIS time-temperature tables. The USDA prints them as pictures, so the digits were taken from the Canadian Food Inspection Agency\'s copy and checked against every figure the USDA states in words, and for smoothness. Heat-up time is not in any government table: it is an estimate from a standard heat-conduction model, checked against published times and rounded on the long side. The typical sizes in the thickness list are rough grocery sizes, not a government table. Tables last checked ' + SV_VERIFIED + '. This is general guidance, not medical advice.</p><ul class="sv-steps sv-src">' +
-    SV_SOURCES.map(([t, u]) => '<li>' + esc(t) + '. <a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + '</a></li>').join('') + '</ul></details></div>';
-}
-
-function svClick(a, el) {
-  if (a === 'sv-mode') { ui.sv.mode = el.dataset.mode === 'low' ? 'low' : 'standard'; svFixBath(); svRemember(); render(); }
-  else if (a === 'sv-preset') svApplyPreset(el.dataset.id);
-  else if (a === 'sv-food-add') svAddFood();
-  else if (a === 'sv-food-del') svDelFood(el.dataset.id);
-  else if (a === 'sv-add-toggle') { ui.sv.addOpen = !(el.parentElement && el.parentElement.open); }
-  else if (a === 'sv-copy-remind') {
-    const r = svReminder(svPlan(svInputs()));
-    if (!r) return;
-    try { navigator.clipboard.writeText(r.copyText).then(() => toast('Copied the reminder.'), () => toast('Copying was blocked. Select the text and copy it instead.')); }
-    catch (e) { toast('Copying was blocked. Select the text and copy it instead.'); }
-  }
-  else if (a === 'sv-copy') {
-    const p = svPlan(svInputs());
-    if (!p.ok) return;
-    const text = svPlanText(p);
-    try { navigator.clipboard.writeText(text).then(() => toast('Copied the plan.'), () => toast('Copying was blocked. Select the text and copy it instead.')); }
-    catch (e) { toast('Copying was blocked. Select the text and copy it instead.'); }
-  }
-  else if (a === 'sv-ideas') svIdeas();
-  else if (a === 'sv-ask') svAsk();
-  else if (a === 'sv-stop') { if (ui.sv.ai.ctl) ui.sv.ai.ctl.abort(); }
-  else if (a === 'sv-photo-use') {
-    const e = ui.sv.photo;
-    if (e && !e.tooThick) { Object.assign(ui.sv, { size: 'exact', unit: 'mm', thick: String(e.use), fromPhoto: { lo: e.lo, hi: e.hi }, photo: null }); render(); }
-  }
-  else if (a === 'sv-photo-drop') { ui.sv.photo = null; render(); }
-}
-function svChange(t) {
-  const k = t.dataset.sv, S = ui.sv;
-  if (k === 'photo') { const f = t.files && t.files[0]; try { t.value = ''; } catch (e) { /* harmless */ } svEstimatePhoto(f); return; }
-  if (k === 'q') { S.ai.q = t.value; return; }
-  if (k === 'food') svSetFood(t.value);
-  else if (k === 'size') { S.size = t.value; S.fromPhoto = null; S.photo = null; }
-  else if (k === 'unit') {
-    const v = Number(S.thick);
-    if (t.value !== S.unit && v > 0) S.thick = String(t.value === 'in' ? Math.round(v / 25.4 * 100) / 100 : Math.round(v * 25.4));
-    S.unit = t.value; S.fromPhoto = null;
-  }
-  else if (k === 'confirm') S.confirm = !!t.checked;
-  else if (k === 'thick') { S.thick = t.value; S.fromPhoto = null; }
-  else if (k === 'bath' || k === 'serve') S[k] = t.value;
-  if (['food', 'size', 'bath'].includes(k)) svRemember();
-  render();
-}
-function svInput(t) { if (t.dataset.sv === 'q') ui.sv.ai.q = t.value; }
-
-
-// ---------- fish, eggs and vegetables: the mode buttons ----------
-const SV_MODE_LABELS = { fish: ['Pasteurized (131 to 141\u00b0F)', 'Not pasteurized (cooler)'], egg: ['Pasteurized in the shell (135\u00b0F)', 'Soft "perfect" egg (148\u00b0F)'], veg: ['Firm-tender (183\u00b0F)', 'Very tender (190\u00b0F)'] };
-function svModeOtherHtml(S, food) {
-  const k = svIsFish(food.kind) ? 'fish' : food.kind === 'egg' ? 'egg' : 'veg', lab = SV_MODE_LABELS[k];
-  const note = k === 'fish' ? (S.mode === 'standard' ? 'Held long enough for a 6-log reduction of Listeria, from Baldwin\'s table. Best for everyone, including anyone pregnant, over 65, under 5, or with a weakened immune system.' : null)
-    : k === 'egg' ? (S.mode === 'standard' ? 'Pasteurized eggs can be used like raw eggs, for example in mousse or mayonnaise. Best for everyone.' : null)
-    : (S.mode === 'standard' ? 'Firm but tender. Root vegetables and squash need this hot a bath; the guide\'s times are for a 183\u00b0F bath.' : 'Softer, for mashing or very tender vegetables. A hotter bath, so the pieces soften sooner.');
-  return '<div class="ai-tools" role="group" aria-label="Schedule" style="margin-top:14px"><button data-action="sv-mode" data-mode="standard" aria-pressed="' + (S.mode === 'standard') + '">' + lab[0] + '</button>' +
-    '<button data-action="sv-mode" data-mode="low" aria-pressed="' + (S.mode === 'low') + '">' + lab[1] + '</button></div>' +
-    (note ? '<p class="muted small" style="margin:8px 0 0">' + note + '</p>'
-      : '<div class="sv-warn"><strong>' + (k === 'fish' ? 'Fish cooked this cool is not pasteurized.' : 'This egg is not pasteurized.') + '</strong> It is for healthy adults only, and the fish or egg should be very fresh. <label class="keep" style="margin-top:8px"><input type="checkbox" data-sv="confirm"' + (S.confirm ? ' checked' : '') + '> Everyone eating this is a healthy adult (not pregnant, not over 65, not under 5, no weakened immune system).</label></div>');
-}
-// ---------- foods you add ----------
-function svCustomHtml() {
-  const S = ui.sv, mine = state.svFoods || [];
-  const baseOpts = [['Meat', SV_BUILTIN.filter(f => f.kind === 'meat')], ['Poultry', SV_BUILTIN.filter(f => ['chicken', 'turkey', 'poultry'].includes(f.kind))], ['Fish', SV_BUILTIN.filter(f => svIsFish(f.kind))], ['Eggs', SV_BUILTIN.filter(f => f.kind === 'egg')], ['Vegetables', SV_BUILTIN.filter(f => svIsVeg(f.kind))]]
-    .map(([g, l]) => '<optgroup label="' + g + '">' + l.map(f => '<option value="' + f.id + '">' + esc(f.label) + '</option>').join('') + '</optgroup>').join('');
-  return '<details' + (S.addOpen || S.addMsg ? ' open' : '') + '><summary data-action="sv-add-toggle">Add your own food</summary>' +
-    '<p class="muted small" style="margin:8px 0">Name your food (for example "Pork tenderloin", "Trout" or "Parsnips") and choose which food it cooks like. It uses that food\'s table, so no time or temperature is ever made up. Ground meat, shellfish and wild game can not be added.</p>' +
-    '<div class="ai-row"><div><label for="svNewName">Name</label><input id="svNewName" maxlength="40" autocomplete="off" placeholder="Trout"></div>' +
-    '<div><label for="svNewBase">Cooks like</label><select id="svNewBase">' + baseOpts + '</select></div></div>' +
-    '<div class="ai-actions"><button class="btn" data-action="sv-food-add">Add food</button></div>' +
-    (S.addMsg ? '<p class="ai-note" role="status">' + esc(S.addMsg) + '</p>' : '') +
-    (mine.length ? '<ul class="entries" style="margin-top:8px">' + mine.map(f => '<li class="entry"><div><div class="entry-name">' + esc(f.name) + '</div><div class="muted small">Cooks like ' + esc((SV_BUILTIN.find(b => b.id === f.base) || { short: '' }).short) + '</div></div><div class="entry-side"><button class="link danger" data-action="sv-food-del" data-id="' + esc(f.id) + '" aria-label="Remove ' + esc(f.name) + '">Remove</button></div></li>').join('') + '</ul>' : '') +
-    '</details>';
-}
-// USDA meat and poultry share a family (their rules are the same). Fish, eggs and vegetables are each their own.
-const svFamily = kind => svIsFish(kind) ? 'fish' : kind === 'egg' ? 'egg' : svIsVeg(kind) ? 'veg' : 'usda';
-// Choosing a food. If it is a different kind of food, the schedule starts over from that food's own defaults (a 183F vegetable bath must not carry over to beef).
-function svSetFood(id) {
-  const S = ui.sv, before = svFamily(svKind());
-  S.food = id;
-  if (svFamily(svKind()) !== before) { S.mode = 'standard'; S.confirm = false; S.bath = String(svDefaultBath('standard', svKind())); S.fromPhoto = null; S.photo = null; }
-  svFixBath(); svFixSize();
-}
-function svAddFood() {
-  const S = ui.sv, nEl = $('svNewName'), bEl = $('svNewBase'), name = String((nEl && nEl.value) || '').replace(/\s+/g, ' ').trim().slice(0, 40), base = bEl && bEl.value;
-  const fail = m => { S.addMsg = m; render(); };
-  if (!/[a-z]/i.test(name)) return fail('Type a name for the food.');
-  const why = svBlockedReason(name);
-  if (why) return fail(why);
-  if (!SV_BUILTIN.some(f => f.id === base)) return fail('Choose which food it cooks like.');
-  if ((state.svFoods || []).length >= 30) return fail('You can add up to 30 foods. Remove one first.');
-  if (SV_FOODS.some(f => f.label.toLowerCase().startsWith(name.toLowerCase() + ' ')) && (state.svFoods || []).some(f => f.name.toLowerCase() === name.toLowerCase())) return fail('You already added "' + name + '".');
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'food';
-  let id = 'svc-' + slug, n = 2;
-  while ((state.svFoods || []).some(f => f.id === id)) id = 'svc-' + slug + '-' + n++;
-  const before = JSON.stringify(state.svFoods || []);
-  state.svFoods = (state.svFoods || []).concat([{ id, name, base }]);
-  svSyncCustom();
-  Object.assign(S, { fromPhoto: null, photo: null, addMsg: '', addOpen: false, confirm: false });
-  svSetFood(id); svRemember(); render();
-  toast('Added ' + name + '.', () => { state.svFoods = JSON.parse(before); svSyncCustom(); if (S.food === id) svSetFood(base); saveState(); render(); });
-}
-function svDelFood(id) {
-  const before = JSON.stringify(state.svFoods || []), f = (state.svFoods || []).find(x => x.id === id);
-  if (!f) return;
-  state.svFoods = state.svFoods.filter(x => x.id !== id); svSyncCustom();
-  if (ui.sv.food === id) { svSetFood(f.base); svRemember(); }
-  saveState(); render();
-  toast('Removed ' + f.name + '.', () => { state.svFoods = JSON.parse(before); svSyncCustom(); saveState(); render(); });
-}
-svSyncCustom();      // your added foods, now that the list exists
-svHydrate(state.sv);   // load remembered settings now that every helper above exists
-
-/* ============================================================
    11. WEIGHT GOAL
    Every number on this screen comes from a published formula or public-health guideline, never from AI. The AI helpers below
    can explain the plan and review your trend, but any sentence that contains a number that is not in your plan is removed.
@@ -4069,6 +3362,7 @@ svHydrate(state.sv);   // load remembered settings now that every helper above e
    - Time to goal uses 3,500 kcal per pound (7,700 per kg). NIH points out this rule ignores the slowing of metabolism as weight changes, so the
      date is an EARLIEST estimate. The NIH Body Weight Planner uses a more accurate model.
    ============================================================ */
+const wlCanAI = () => AI.status === 'ready' && !!AI.sample;   // whether the AI helpers below (explain, review my trend) can run
 const WL_VERIFIED = '2026-09-19';
 const WL_ACT = [
   ['sedentary', 'Sedentary: little or no exercise', 1.2],
@@ -4375,7 +3669,7 @@ async function wlAI(prompt) {
 const wlAIError = e => e && e.code === 'cancelled' ? 'Stopped.' : e && e.code === 'rate_limited' ? 'Too many requests, or your Claude usage limit was reached. Try again later.' : 'That did not work. Try again.';
 async function wlExplain() {
   const ai = ui.wl.ai, c = wlCompute();
-  if (!svCanAI() || ai.busy || !c.plan.ok) return;
+  if (!wlCanAI() || ai.busy || !c.plan.ok) return;
   const facts = wlFacts(c), allowed = wlAllowed(facts);
   try {
     const d = await wlAI('You explain a personal calorie and protein plan in plain language. ' + WL_AI_RULES + '\nFACTS:\n- ' + facts.join('\n- ') +
@@ -4389,7 +3683,7 @@ async function wlExplain() {
 }
 async function wlCheckin() {
   const ai = ui.wl.ai, c = wlCompute();
-  if (!svCanAI() || ai.busy || !c.plan.ok) return;
+  if (!wlCanAI() || ai.busy || !c.plan.ok) return;
   const facts = wlFacts(c), tr = c.trend, planned = wlPlannedAvg(c.today, 7), eta = wlEta(tr, c.plan.goalKg, c.today);
   if (tr) facts.push('Weigh-ins in the last 28 days: ' + tr.n, 'Trend: about ' + fmt1(Math.abs(kgToLb(tr.kgPerWeek))) + ' lb (' + fmt1(Math.abs(tr.kgPerWeek)) + ' kg) a week ' + (tr.kgPerWeek < -0.05 ? 'down' : tr.kgPerWeek > 0.05 ? 'up' : 'steady'));
   if (eta) facts.push('If the trend continues, goal reached around ' + wlMonthYear(eta));
@@ -4445,7 +3739,7 @@ function wlLogHtml(c) {
     '<p class="sv-src" style="margin:8px 0 0">Your weights are saved on this device and, in claude.ai, in your private account storage so your devices match. Nobody else can read them. Scale weight moves with water and salt, so look at the trend, not one day.</p>';
 }
 function wlAIHtml(c) {
-  if (!svCanAI() || !c.plan.ok) return '';
+  if (!wlCanAI() || !c.plan.ok) return '';
   const ai = ui.wl.ai;
   const ex = ai.explain ? '<div class="ai-card" style="margin-top:10px">' + (ai.explain.text ? '<p style="margin:0 0 8px">' + esc(ai.explain.text) + '</p>' : '') + (ai.explain.tips.length ? '<p style="margin:0 0 4px"><strong>Ideas</strong></p><ul class="sv-steps">' + ai.explain.tips.map(t => '<li>' + esc(t) + '</li>').join('') + '</ul>' : '') +
     (ai.explain.dropped ? '<p class="sv-src" style="margin:8px 0 0">Anything with a number that is not in your plan was removed.</p>' : '') + '</div>' : '';
@@ -4604,7 +3898,7 @@ wlHydrate(state.profile);   // load saved details now that everything above exis
 const AI = { sample: null, status: 'checking' };   // status: checking | ready | unavailable
 const AI_TOOLS = [
   ['describe', 'Describe a meal'], ['ideas', 'Ingredient ideas'], ['fill', 'Fill the day'],
-  ['swap', 'Swap a meal'], ['review', 'Review my plan'], ['shop', 'Shopping list'], ['sousvide', 'Sous vide']
+  ['swap', 'Swap a meal'], ['review', 'Review my plan'], ['shop', 'Shopping list']
 ];
 ui.ai = {
   tool: 'describe', busy: false, busyTool: null, ctl: null, err: '', errTool: null, results: {},
@@ -5009,15 +4303,12 @@ function aiResultsHtml(tool) {
 function viewAI() {
   const inp = ui.ai.inputs;
   const label = parseKey(ui.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  const showDate = AI.status === 'ready' && ui.ai.tool !== 'sousvide';     // the sous vide planner does not use the day
-  const head = '<div class="ai"><div class="datebar"><h2>' + (AI.status === 'unavailable' ? 'Sous vide' : 'AI helpers') + '</h2>' + (showDate ?
+  const head = '<div class="ai"><div class="datebar"><h2>AI helpers</h2>' +
     '<label for="datePick" style="margin:0">Working on</label>' +
-    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Choose the day the helpers work on">' : '') + '</div>';
+    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Choose the day the helpers work on"></div>';
   const aiOk = AI.status === 'ready';
-  const notice = AI.status === 'checking' ? '<p class="muted">Checking whether Claude is available in this view…</p>'
-    : AI.status === 'unavailable' ? '<p class="ai-note">The Claude-powered helpers are not available in this version (they need permission to use Claude, which only works inside claude.ai).' +
-      (ui.ai.err ? ' ' + esc(ui.ai.err) : '') + ' The sous vide planner does not need them, so it works as normal.</p>' : '';
-  const tool = aiOk ? ui.ai.tool : 'sousvide';
+  const notice = AI.status === 'checking' ? '<p class="muted">Checking whether Claude is available in this view…</p>' : '';
+  const tool = ui.ai.tool;
   const busy = ui.ai.busy;
   const run = (text) => '<div class="ai-run"><button class="btn primary" data-action="ai-run" data-tool="' + tool + '"' + (busy ? ' disabled' : '') + '>' + text + '</button>' +
     (busy && ui.ai.busyTool === tool ? '<span role="status">Thinking… this can take up to a minute.</span><button class="link" data-action="ai-stop">Stop</button>' : '') + '</div>' +
@@ -5060,13 +4351,10 @@ function viewAI() {
     const start = weekStartKey(ui.date);
     const fmt = k => parseKey(k).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     panel = '<p style="margin:0">Builds a shopping list from every meal planned for the week of ' + fmt(start) + ' to ' + fmt(shiftKey(start, 6)) + ', grouped by store section.</p>' + run('Make shopping list');
-  } else if (tool === 'sousvide') {
-    panel = svHtml();
   }
-  const tools = aiOk ? AI_TOOLS : AI_TOOLS.filter(t => t[0] === 'sousvide');
-  const info = tool === 'sousvide' || !aiOk ? '' :
+  const info = !aiOk ? '' :
     '<p class="muted small" style="margin:12px 0 0">Runs on your own claude.ai account and asks permission the first time. Nutrition numbers always come from the USDA data, never from the AI. Anything you add goes to ' + esc(label) + '.</p>';
-  return head + notice + '<div class="ai-tools" role="group" aria-label="AI helpers">' + tools.map(([id, name]) =>
+  return head + notice + '<div class="ai-tools" role="group" aria-label="AI helpers">' + AI_TOOLS.map(([id, name]) =>
       '<button data-action="ai-tool" data-tool="' + id + '" aria-pressed="' + (id === tool ? 'true' : 'false') + '">' + name + '</button>').join('') + '</div>' +
     info + '<div class="ai-panel">' + panel + '</div>' + aiResultsHtml(tool) + '</div>';
 }
@@ -5155,9 +4443,9 @@ document.addEventListener('click', e => {
 
   else if (a.startsWith('ai-')) { aiClick(a, el); }
   else if (a.startsWith('scan-')) { scanClick(a, el); }
-  else if (a.startsWith('sv-')) { svClick(a, el); }
   else if (a.startsWith('wl-')) { wlClick(a, el); }
   else if (a === 'rdi-open') { ui.tab = 'rdi'; render(); }
+  else if (a === 'rdi-range') { ui.rdiRange = el.dataset.range === 'week' ? 'week' : 'day'; render(); }
   else if (a === 'help-open') { ui.tab = 'help'; state.guideSeen = true; saveState(); render(); try { window.scrollTo(0, 0); } catch (e) { /* harmless */ } }
   else if (a === 'help-close') { ui.tab = 'plan'; render(); }
   else if (a === 'guide-dismiss') { state.guideSeen = true; saveState(); render(); }
@@ -5327,7 +4615,6 @@ document.addEventListener('change', e => {
   if (t.dataset && t.dataset.wl) { wlChange(t); return; }
   if (t.dataset && t.dataset.ai) { aiChange(t); return; }
   if (t.dataset && t.dataset.scan) { scanChange(t); return; }
-  if (t.dataset && t.dataset.sv) { svChange(t); return; }
   if (t.dataset && t.dataset.quick) { quickChange(t); return; }
   if (t.dataset && t.dataset.fa) { faChange(t); return; }
 
@@ -5389,7 +4676,6 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.dataset && t.dataset.ai) { aiInput(t); return; }
   if (t.dataset && t.dataset.scan) { scanInput(t); return; }
-  if (t.dataset && t.dataset.sv) { svInput(t); return; }
   if (t.dataset && t.dataset.quick) { quickInput(t); return; }
   if (t.dataset && t.dataset.fa) { faInput(t); return; }
   if (t.id === 'mealName') ui.draft.name = t.value;
@@ -5405,7 +4691,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.09.23-6';
+const APP_VERSION = '2026.09.30-2';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
