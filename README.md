@@ -140,6 +140,31 @@ or added sous vide foods saved from before just quietly stops syncing them.
 If you are updating an existing deployment, upload the new `index.html` and `version.json`
 from this `site` folder. `products.json` did not change.
 
+## What changed in 2026.10.01-1
+
+Faster ways to log food without searching and tapping "add" one item at a time, and a way
+for whoever maintains this site to find out which foods are missing from it:
+
+- **Add several foods at once**: a "+ Add several at once" button on each meal (Day tab)
+  opens a box where you list what you ate, one food per line, and it matches and logs all
+  of them in one go.
+- **Bulk barcode scanning**: with "Log a known barcode the instant it scans" turned on, the
+  live camera now keeps scanning after each one instead of stopping — several barcodes in a
+  row log automatically, one after another. An unrecognized barcode no longer interrupts the
+  run with a form; it is simply noted for later.
+- **Paste a batch of barcode numbers**: a "+ Add several barcodes at once" box on the Scan
+  tab, for anyone who already has a list of numbers (from a barcode-scanning phone app, a
+  dedicated Bluetooth scanner, or typed from receipts) and would rather paste them than scan
+  one at a time. A Bluetooth barcode scanner also now works directly with the existing
+  "type the number" box — it types the digits and presses Enter for you.
+- **Export foods needing database entries**: anything typed or scanned that matched nothing
+  is never silently dropped. It is noted, and a new "Foods not found" section on the Help
+  screen lets you export that list (just names and numbers, nothing personal) to send to
+  whoever maintains this app's food list.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
 ## Deploying it (you do this part; I cannot host anything myself)
 
 Any static host that serves plain files over HTTPS will do. The simplest is GitHub Pages:

@@ -673,6 +673,7 @@ function defaultState() {
     guideSeen: false, // the welcome banner has been dismissed. Kept on this device only.
     pinned: [],       // food ids pinned as quick-add staples
     autoScan: false,  // one-tap barcode logging (feature 4), off by default
+    unmatched: [],    // foods typed in "Add several at once" or barcodes scanned in one-tap mode that matched nothing: [{name, barcode, n, last}]. For later lookup and adding to the shared database. Kept on this device only.
     wkCollapsed: {},  // days folded away in the phone week view: { 'YYYY-MM-DD': true }. Kept on this device only.
     rdiPref: { age: '', sex: '' },   // whose vitamin and mineral amounts to show: age group 0-3 and 'F' or 'M'; empty means use the Goal details
     targets: { kcal: 2000, protein: 120, carbs: null, fat: null, sodium: null, potassium: null, sugar: null }   // the last four are blank until you set them: then they are worked out from your calories and the reference values
@@ -1004,13 +1005,70 @@ function pinnedStapleHtml() {
 
 // ---------- 4. one-tap barcode logging ----------
 // Off by default: some people want to check the amount before it is logged. When on, scanning a barcode the app already knows logs it immediately at its usual amount, no confirm tap.
-function scanAutoAdd(f) {
+// live = true only when the live camera itself produced this code (not a typed number, a Bluetooth scanner typing into the
+// box, or a photo), so only that path reopens the camera for the next scan.
+function scanAutoAdd(f, live) {
   const r = logFood(f, Number(ui.scan.qty) || 1, ui.scan.unit, ui.scan.slot);
   if (!r) return false;
-  Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(ui.scan.slot) + ' automatically. Scan the next one whenever you are ready.' });
+  Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(ui.scan.slot) + (live ? '. Scanning the next one…' : '. Ready for the next one.') });
   render();
   toast('Added to ' + SLOT_LABEL(ui.scan.slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
+  if (live) startLive();        // bulk camera mode: keep going without a tap, so several barcodes in a row log one after another
   return true;
+}
+// Bulk mode, barcode not recognized: do not stop to ask for label details (that would break the run of scans). Note it for
+// later (Help > export) and, for the live camera, keep it going the same as a successful auto-add.
+function scanAutoMiss(code, live) {
+  trackUnmatched('Barcode ' + showCode(code), code);
+  Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Not in the database yet — noted for later.' + (live ? ' Scanning the next one…' : ' Ready for the next one.') });
+  render();
+  if (live) startLive();
+}
+
+/* ---------- add several barcodes at once, by pasting their numbers ---------- */
+// For anyone who already has a list of barcode numbers — scanned earlier with a dedicated scanner, copied from a
+// spreadsheet, typed from receipts — and would rather paste them all than scan or type one at a time.
+function scanBulkBoxHtml() {
+  const B = ui.scanBulk;
+  return '<div class="bulk-add" style="margin-top:10px">' +
+    '<label for="scanBulkText" class="sr-only">Barcode numbers, one per line</label>' +
+    '<textarea id="scanBulkText" data-scanbulk="text" rows="4" placeholder="One barcode number per line" style="width:100%">' + esc(B.text) + '</textarea>' +
+    '<div class="ai-row" style="margin-top:6px"><div><label for="scanBulkSlot">Meal</label><select id="scanBulkSlot" data-scanbulk="slot">' + optionsHtml(SLOTS, ui.scan.slot) + '</select></div></div>' +
+    '<div class="ai-actions" style="margin-top:6px"><button class="btn primary" data-action="scanbulk-submit">Look up and add</button><button class="btn" data-action="scanbulk-cancel">Cancel</button></div>' +
+    '<p class="muted small" style="margin:6px 0 0">Known barcodes (including the USDA branded list) are added right away. Anything not recognized is not added, but is noted under Help so it can be added to the food list later.</p></div>';
+}
+function scanBulkInput(t) { if (t.dataset.scanbulk === 'text') ui.scanBulk.text = t.value; }
+function scanBulkChange(t) { if (t.dataset.scanbulk === 'slot') ui.scan.slot = t.value; }
+function scanBulkClick(a) {
+  if (a === 'scanbulk-toggle') { ui.scanBulk.open = !ui.scanBulk.open; render(); }
+  else if (a === 'scanbulk-cancel') { ui.scanBulk.open = false; ui.scanBulk.text = ''; render(); }
+  else if (a === 'scanbulk-submit') scanBulkSubmit();
+}
+function scanBulkSubmit() {
+  const lines = ui.scanBulk.text.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!lines.length) { toast('Type or paste at least one barcode number, one per line.'); return; }
+  let added = 0; const misses = [];
+  lines.forEach(raw => {
+    const code = normalizeCode(raw);
+    if (!code) { trackUnmatched('Barcode ' + raw.slice(0, 40) + ' (not a valid number)'); misses.push(raw); return; }
+    let food = foodForCode(code);
+    if (!food) {
+      const rec = brandRecord(code);
+      if (rec) {
+        food = brandFood(rec);
+        if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
+        state.barcodes[code] = food.id;
+      }
+    }
+    if (food) {
+      const hasServing = !!(food.serving && food.serving.grams > 0);
+      if (logFood(food, hasServing ? 1 : 100, hasServing ? 1 : 0, ui.scan.slot)) added++;
+    } else { trackUnmatched('Barcode ' + showCode(code), code); misses.push(raw); }
+  });
+  ui.scanBulk.text = ''; ui.scanBulk.open = false;
+  saveState();
+  render();
+  toast(added + ' added to ' + SLOT_LABEL(ui.scan.slot) + (misses.length ? ', ' + misses.length + ' not found (noted under Help).' : '.'));
 }
 
 // ---------- 5. copy a whole day onto today ----------
@@ -1143,6 +1201,7 @@ function quickChange(t) {
 
 /* ---------- add a food straight to the day: search all the foods, pick one, set an amount ---------- */
 ui.fa = { q: '', pick: null, qty: 100, unit: 0, slot: 'lunch', form: null, replace: null };
+ui.bulk = {};   // "Add several at once" per slot: { open, text }. UI-only, not saved.
 ui.audit = false;
 ui.ovOpen = false;
 ui.mnOpen = false;
@@ -1238,6 +1297,51 @@ function faChange(t) {
   else if (k === 'slot') F.slot = t.value;
   else if (k === 'label') { const file = t.files && t.files[0]; try { t.value = ''; } catch (e) { /* harmless */ } faReadLabel(file); }
   else if (k.startsWith('f:') && F.form) { F.form[k.slice(2)] = t.value; render(); }
+}
+
+/* ---------- add several foods to one meal at once, by typing their names ---------- */
+// For anyone who does not want to search and tap "add" once per food: list what you ate for a meal, one per line, and
+// each line is matched the same way the normal search box matches (a strict match: every word in the line must fit).
+// A line that matches nothing is not silently dropped: it is logged for later (Help > export) so it can be looked up
+// properly and added to the shared database, and you are told which lines those were.
+function bulkState(slot) { return ui.bulk[slot] || (ui.bulk[slot] = { open: false, text: '' }); }
+function bulkBoxHtml(slot) {
+  const B = bulkState(slot);
+  return '<div class="bulk-add" style="margin-top:8px">' +
+    '<label for="bulk-' + slot + '" class="sr-only">List the foods for ' + esc(SLOT_LABEL(slot)) + ', one per line</label>' +
+    '<textarea id="bulk-' + slot + '" data-bulk="text" data-slot="' + slot + '" rows="3" placeholder="One food per line, e.g.\neggs\ntoast\ncoffee" style="width:100%">' + esc(B.text) + '</textarea>' +
+    '<div class="ai-actions" style="margin-top:6px"><button class="btn primary" data-action="bulk-submit" data-slot="' + slot + '">Match and add</button>' +
+    '<button class="btn" data-action="bulk-cancel" data-slot="' + slot + '">Cancel</button></div>' +
+    '<p class="muted small" style="margin:6px 0 0">Anything not found is not added, but is noted under Help so it can be added to the food list later.</p></div>';
+}
+function bulkInput(t) {
+  const slot = t.dataset.slot;
+  if (!slot) return;
+  bulkState(slot).text = t.value;
+}
+function bulkClick(a, el) {
+  const slot = el.dataset.slot;
+  if (!slot) return;
+  const B = bulkState(slot);
+  if (a === 'bulk-toggle') { B.open = !B.open; render(); if (B.open) { ui.refocus = '#bulk-' + slot; } }
+  else if (a === 'bulk-cancel') { B.open = false; B.text = ''; render(); }
+  else if (a === 'bulk-submit') bulkSubmit(slot);
+}
+function bulkSubmit(slot) {
+  const B = bulkState(slot);
+  const lines = B.text.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!lines.length) { toast('Type at least one food, one per line.'); return; }
+  let added = 0; const misses = [];
+  lines.forEach(line => {
+    const r = searchFoods(line, 1, true), f = r.list[0];
+    if (f) {
+      const hasServing = !!(f.serving && f.serving.grams > 0);
+      if (logFood(f, hasServing ? 1 : 100, hasServing ? 1 : 0, slot)) added++;
+    } else { trackUnmatched(line); misses.push(line); }
+  });
+  B.text = ''; B.open = false;
+  render();
+  toast(added + ' added to ' + SLOT_LABEL(slot) + (misses.length ? ', ' + misses.length + ' not found (noted under Help).' : '.'));
 }
 
 /* ---------- the same meal more than once is ONE row with a quantity ---------- */
@@ -1911,6 +2015,11 @@ async function saveFile(filename, text, doneMsg) {
   catch (e) { if (e && e.code === 'declined') { toast('Not saved.'); return; } fallback(); }
 }
 const backupSave = () => saveFile('meal-planner-backup-' + keyOf(new Date()) + '.json', JSON.stringify(backupObject()), 'Backup saved.');
+// ---- foods and barcodes that matched nothing (from "Add several at once" or one-tap barcode scanning): just names/numbers, for whoever maintains this app's food list ----
+const unmatchedSorted = () => (state.unmatched || []).slice().sort((a, b) => (b.n - a.n) || a.name.localeCompare(b.name));
+const unmatchedExportSave = () => saveFile('meal-planner-not-found-' + keyOf(new Date()) + '.json',
+  JSON.stringify({ app: APP_ID, kind: 'unmatched', version: 1, saved: new Date().toISOString(), items: unmatchedSorted() }, null, 2),
+  'Exported.');
 function helpParse(text, kind) {
   let o;
   try { o = JSON.parse(text); } catch (e) { return { error: 'That file is not a backup. It should be a .json file saved from this app.' }; }
@@ -2043,6 +2152,8 @@ function viewHelp() {
     (H.undo ? '<button class="btn" data-action="backup-undo">Undo the last restore</button>' : '') + '</div>' + restoreCard +
     '<h3>Share products with friends</h3><p class="muted small" style="margin:0">A public link can not hold a shared library, so share the products you have entered as a file and send it in a message. It has only foods and barcodes, nothing personal. Send yours to the person who shared this app, and they can add your brands for everyone.</p>' +
     '<div class="ai-actions"><button class="btn primary" data-action="products-save">Download my products file</button><label class="btn" for="helpProducts">Add products from a friend</label><input type="file" id="helpProducts" data-help="productsfile" accept=".json,application/json,text/plain" class="sr-only"></div>' + prodCard +
+    ((state.unmatched || []).length ? '<h3>Foods not found (' + state.unmatched.length + ')</h3><p class="muted small" style="margin:0">Names typed into "Add several at once" and barcodes scanned in one-tap mode that matched nothing. Nothing here was added to your log. Export this list for whoever maintains this app’s food list — it is just names and numbers, nothing personal.</p>' +
+      '<div class="ai-actions"><button class="btn primary" data-action="unmatched-export">Export foods needing database entries</button></div>' : '') +
     '<h3>Something wrong?</h3><p class="muted small" style="margin:0">Tap "Report a wrong number" under any nutrition facts or on a scanned product to copy a message you can send. If the app or the camera is not working, copy the support info and send that. It has no meals, weights or personal details.</p>' +
     '<div class="ai-actions"><button class="btn" data-action="support-copy">Copy support info</button></div>' +
     '<h3>Where the numbers come from</h3><ul class="sv-steps sv-src"><li>USDA FoodData Central (public domain): the food data and the brand barcode list, downloaded April 2026.</li><li>National Academies and NIH Office of Dietary Supplements: vitamin and mineral amounts. FDA: label Daily Values.</li><li>This is an independent hobby project, not connected to any of these organizations.</li></ul></div>';
@@ -2222,11 +2333,13 @@ function viewPlan() {
       '<div class="slot-head"><h3 id="slot-' + id + '">' + name + '</h3><div class="slot-tools">' +
       (clip ? '<button class="link" data-action="paste-meal" data-date="' + ui.date + '" data-slot="' + id + '" aria-label="Paste ' + esc(clip.name) + ' into ' + name + '">Paste</button>' : '') +
       (ids.length && later.length ? '<button class="link" data-action="repeat-slot" data-slot="' + id + '" aria-label="Repeat ' + name + ' on the rest of the week">Repeat on rest of week</button>' : '') +
+      '<button class="link" data-action="bulk-toggle" data-slot="' + id + '" aria-expanded="' + !!bulkState(id).open + '">' + (bulkState(id).open ? 'Hide quick add' : '+ Add several at once') + '</button>' +
       '<span class="muted kcal">' + (slotKcal ? n0(slotKcal) + ' kcal' : '') + '</span></div></div>' +
       (rows ? '<ul class="entries">' + rows + '</ul>' : '<p class="empty">Nothing planned yet.</p>') + chipsHtml(id, name) +
       (state.meals.length
         ? '<select class="add-select" data-add-slot="' + id + '" aria-label="Add a meal to ' + name + '"><option value="">Add a meal…</option>' + options + '</select>'
         : '<p class="empty">Build a meal in the Meals tab first.</p>') +
+      (bulkState(id).open ? bulkBoxHtml(id) : '') +
       '</section>';
   }).join('');
 
@@ -2915,6 +3028,7 @@ function decodeGrayBoth(gray, w, h, y0, y1, rows) {
 const SCAN = { stream: null, timer: null, detector: undefined, busy: false, lastCode: null, hits: 0, lastFile: null, canImages: false, cv: null, ctl: null, liveErr: '' };
 const guessSlot = () => { const h = new Date().getHours(); return h < 11 ? 'breakfast' : h < 15 ? 'lunch' : h < 17 ? 'snacks' : 'dinner'; };
 ui.scan = { code: '', typed: '', msg: '', qty: 100, unit: 0, slot: guessSlot(), form: null, linkQuery: '', busy: false, photoFailed: false };
+ui.scanBulk = { open: false, text: '' };   // "Add several barcodes at once": paste a list of barcode numbers instead of scanning or typing one at a time. UI-only, not saved.
 const showCode = c => c.length === 13 && c[0] === '0' ? c.slice(1) : c;   // UPC-A is shown as 12 digits, the way it is printed
 const foodForCode = code => { const id = (state.barcodes || {})[code]; return id ? foodMap()[id] || null : null; };
 
@@ -3036,7 +3150,7 @@ async function scanFrame() {
       if (SCAN.hits >= 2) {                                  // the same code in two frames in a row
         stopLive();
         try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* ignore */ }
-        handleCode(...asScanned(code));
+        handleCode(...asScanned(code), true);     // true: this code came from the live camera, so auto mode may reopen it for the next one
       }
     } else SCAN.hits = 0;
   } catch (e) { /* skip this frame */ } finally { SCAN.busy = false; }
@@ -3054,12 +3168,13 @@ function setDefaultAmount(f) {
   ui.scan.unit = hasServing ? 1 : 0;
   ui.scan.qty = hasServing ? 1 : 100;
 }
-function handleCode(raw, fmt) {
+function handleCode(raw, fmt, live) {
   const code = normalizeCode(raw, fmt);
   if (!code) { ui.scan.msg = 'That number is not a valid barcode. Check the digits and try again.'; render(); return false; }
   Object.assign(ui.scan, { code, typed: showCode(code), msg: '', form: null, linkQuery: '', photoFailed: false, brandSkip: '' });
   const f = foodForCode(code);
-  if (f) { setDefaultAmount(f); if (state.autoScan && scanAutoAdd(f)) return true; }
+  if (f) { setDefaultAmount(f); if (state.autoScan && scanAutoAdd(f, live)) return true; }
+  else if (state.autoScan) { scanAutoMiss(code, live); return true; }
   render();
   return true;
 }
@@ -3092,6 +3207,18 @@ function logFood(f, qty, unitIdx, slot) {
   return { name, before };
 }
 // Logging what was scanned.
+// A name (from "Add several at once") or a barcode (from one-tap scanning) that matched nothing: noted for later, so it can be
+// exported from Help, looked up properly, and added to the shared database. Never synced between devices; this device only.
+function trackUnmatched(name, barcode) {
+  name = String(name || '').trim().slice(0, 80);
+  if (!name) return;
+  const list = state.unmatched = state.unmatched || [];
+  const key = name.toLowerCase();
+  const hit = list.find(u => u.name.toLowerCase() === key);
+  if (hit) { hit.n = (hit.n || 1) + 1; hit.last = ui.date; if (barcode && !hit.barcode) hit.barcode = barcode; }
+  else list.push({ name, barcode: barcode || null, n: 1, last: ui.date });
+  saveState();
+}
 /* ---------- using the brand pack when a barcode is not linked yet ---------- */
 const BRAND_BY_CODE = {};
 BRAND_PACK.forEach(r => { BRAND_BY_CODE[r[0]] = r; });
@@ -3266,16 +3393,20 @@ function viewScan() {
     (block && !block.retry
       ? '<div class="scan-actions"><label class="btn primary big" for="scanPhoto">Take a photo of the barcode</label><input type="file" id="scanPhoto" data-scan="photo" accept="image/*" capture="environment" class="sr-only">' +
         '<label class="btn big" for="scanPick">Choose a photo</label><input type="file" id="scanPick" data-scan="photo" accept="image/*" class="sr-only"></div>' +
-        '<p class="ai-note" role="status">' + esc(block.msg) + '</p>'
+        '<p class="ai-note" role="status">' + esc(block.msg) + '</p>' +
+        '<p class="muted small" style="margin:6px 0 0">Scanning several at once? A free barcode-scanner app (search your phone’s app store) will read each one and show you the number to copy — build up a list, then paste them all into “Add several barcodes at once” below.</p>'
       : '<div class="scan-actions"><button class="btn primary big" data-action="scan-live">Scan with camera</button>' +
         '<label class="btn big" for="scanPhoto">Take a photo</label><input type="file" id="scanPhoto" data-scan="photo" accept="image/*" capture="environment" class="sr-only">' +
         '<label class="btn big" for="scanPick">Choose a photo</label><input type="file" id="scanPick" data-scan="photo" accept="image/*" class="sr-only"></div>') +
     '<label class="keep" style="margin:10px 0 4px"><input type="checkbox" data-scan="autoAdd"' + (state.autoScan ? ' checked' : '') + '> Log a known barcode the instant it scans, at its usual amount</label>' +
     '<label for="scanCode">Or type the number under the barcode</label>' +
     '<div class="scan-typerow"><input id="scanCode" data-scan="typed" inputmode="numeric" autocomplete="off" maxlength="16" placeholder="012345678905" value="' + esc(S.typed) + '"><button class="btn" data-action="scan-lookup">Look up</button></div>' +
+    '<p class="muted small" style="margin:4px 0 0">A Bluetooth barcode scanner works here too: pair it, tap into this box, and scan — it types the number and looks it up for you, same as typing it in.</p>' +
     (S.msg ? '<p class="ai-note scan-msg-line" role="status">' + esc(S.msg) + (S.busy ? ' <button class="link" data-action="scan-stop">Stop</button>' : '') + '</p>' : '') +
     (S.photoFailed && canLabel && SCAN.lastFile ? '<div class="ai-actions"><button class="btn" data-action="scan-read-claude">Ask Claude to read the digits from the photo</button></div>' : '') +
-    result + brandInfoHtml() + '<p class="muted small" style="margin-top:20px">For a photo: hold the phone about a hand-span from the barcode, keep it flat and well lit, and have it fill at least a fifth of the picture width (closer is better). If it still will not read, type the number printed under the bars. Products you teach the app are remembered and sync between your devices.</p></div>';
+    result + '<p style="margin:10px 0 0"><button class="link" data-action="scanbulk-toggle" aria-expanded="' + !!ui.scanBulk.open + '">' + (ui.scanBulk.open ? 'Hide' : '+ Add several barcodes at once') + '</button></p>' +
+    (ui.scanBulk.open ? scanBulkBoxHtml() : '') +
+    brandInfoHtml() + '<p class="muted small" style="margin-top:20px">For a photo: hold the phone about a hand-span from the barcode, keep it flat and well lit, and have it fill at least a fifth of the picture width (closer is better). If it still will not read, type the number printed under the bars. Products you teach the app are remembered and sync between your devices.</p></div>';
 }
 
 /* ---------- Scan events ---------- */
@@ -4483,6 +4614,9 @@ document.addEventListener('click', e => {
   else if (a === 'ov-toggle') { ui.ovOpen = !(el.parentElement && el.parentElement.open); }   // the click arrives before the browser flips it
   else if (a.startsWith('ql-')) { qlClick(a); }
   else if (a.startsWith('fa-') || a.startsWith('audit-')) { faClick(a, el); }
+  else if (a.startsWith('bulk-')) { bulkClick(a, el); }
+  else if (a.startsWith('scanbulk-')) { scanBulkClick(a); }
+  else if (a === 'unmatched-export') unmatchedExportSave();
   else if (a === 'qty-inc' || a === 'qty-dec' || a === 'remove-group') { qtyClick(a, el); }
   else if (a === 'quick-add') { quickAddMeal(el.dataset.slot, el.dataset.meal); }
 
@@ -4615,6 +4749,7 @@ document.addEventListener('change', e => {
   if (t.dataset && t.dataset.wl) { wlChange(t); return; }
   if (t.dataset && t.dataset.ai) { aiChange(t); return; }
   if (t.dataset && t.dataset.scan) { scanChange(t); return; }
+  if (t.dataset && t.dataset.scanbulk) { scanBulkChange(t); return; }
   if (t.dataset && t.dataset.quick) { quickChange(t); return; }
   if (t.dataset && t.dataset.fa) { faChange(t); return; }
 
@@ -4676,8 +4811,10 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.dataset && t.dataset.ai) { aiInput(t); return; }
   if (t.dataset && t.dataset.scan) { scanInput(t); return; }
+  if (t.dataset && t.dataset.scanbulk) { scanBulkInput(t); return; }
   if (t.dataset && t.dataset.quick) { quickInput(t); return; }
   if (t.dataset && t.dataset.fa) { faInput(t); return; }
+  if (t.dataset && t.dataset.bulk) { bulkInput(t); return; }
   if (t.id === 'mealName') ui.draft.name = t.value;
   else if (t.id === 'pickQuery') { ui.pickQuery = t.value; refreshPickOptions(); }
   else if (t.id === 'foodQuery') { ui.foodQuery = t.value; const res = foodResults(); $('foodRows').innerHTML = res.rows; $('foodInfo').textContent = res.note; }
@@ -4691,7 +4828,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.09.30-2';
+const APP_VERSION = '2026.10.01-1';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
