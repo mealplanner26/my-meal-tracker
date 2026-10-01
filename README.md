@@ -165,6 +165,34 @@ for whoever maintains this site to find out which foods are missing from it:
 If you are updating an existing deployment, upload the new `index.html` and `version.json`
 from this `site` folder. `products.json` did not change.
 
+## What changed in 2026.10.01-2
+
+Four products added to the barcode list, verified from a real "Foods not found" export sent
+in from a phone testing the site:
+- Nature's Path Love Crunch Organic Dark Chocolate & Blueberry Granola
+- Epic Bison Bar, Uncured Bacon + Cranberry
+- Pretzelized Snacks Honey Mustard Pretzel Crackers
+- Laird Superfood Vanilla Liquid Creamer
+
+The barcode list is now 770 products.
+
+If you are updating an existing deployment, upload the new `index.html`, `products.json`,
+and `version.json` from this `site` folder.
+
+## What changed in 2026.10.01-3
+
+Sending the "Foods not found" list is now one tap, from right next to "Help and backup":
+
+- A **"Send N unmatched"** shortcut appears at the top of the app, beside "Help and backup",
+  whenever there is something to send — no need to open Help first.
+- On a phone, tapping it (either there or the button inside Help) now opens your normal
+  share sheet (Messages, Mail, AirDrop, whatever you have) with the file already attached,
+  so you can hand it straight to whoever maintains this app's food list. Where sharing a
+  file is not available, it falls back to an ordinary download, as before.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
 ## Deploying it (you do this part; I cannot host anything myself)
 
 Any static host that serves plain files over HTTPS will do. The simplest is GitHub Pages:

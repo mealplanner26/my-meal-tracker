@@ -498,7 +498,7 @@ textarea { resize: vertical; display: block; }
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="brand"><h1>Meal Rotation Planner</h1><p id="syncNote" class="sync-note" role="status"></p><button class="link help-link" data-action="help-open">Help and backup</button></div>
+    <div class="brand"><h1>Meal Rotation Planner</h1><p id="syncNote" class="sync-note" role="status"></p><button class="link help-link" data-action="help-open">Help and backup</button><button class="link help-link" id="unmatchedQuick" data-action="unmatched-export-quick" hidden></button></div>
     <nav class="tabs" aria-label="Sections">
       <button data-action="tab" data-tab="plan">Day</button>
       <button data-action="tab" data-tab="week">Week</button>
@@ -2020,6 +2020,26 @@ const unmatchedSorted = () => (state.unmatched || []).slice().sort((a, b) => (b.
 const unmatchedExportSave = () => saveFile('meal-planner-not-found-' + keyOf(new Date()) + '.json',
   JSON.stringify({ app: APP_ID, kind: 'unmatched', version: 1, saved: new Date().toISOString(), items: unmatchedSorted() }, null, 2),
   'Exported.');
+// One tap, sent straight out: on a phone that supports it, this opens the normal share sheet (Messages, Mail,
+// AirDrop, whatever is installed) with the file already attached, so there is no separate "now go find the file
+// and attach it yourself" step. Falls back to an ordinary download wherever sharing a file is not available.
+async function unmatchedExportSend() {
+  const items = unmatchedSorted();
+  if (!items.length) return;
+  const filename = 'meal-planner-not-found-' + keyOf(new Date()) + '.json';
+  const text = JSON.stringify({ app: APP_ID, kind: 'unmatched', version: 1, saved: new Date().toISOString(), items }, null, 2);
+  try {
+    if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare && typeof File === 'function') {
+      const file = new File([text], filename, { type: 'application/json' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Foods not found', text: items.length + ' food(s)/barcode(s) not in the database' });
+        toast('Shared.');
+        return;
+      }
+    }
+  } catch (e) { if (e && e.name === 'AbortError') return; /* person backed out of the share sheet: do nothing, do not also download */ }
+  unmatchedExportSave();
+}
 function helpParse(text, kind) {
   let o;
   try { o = JSON.parse(text); } catch (e) { return { error: 'That file is not a backup. It should be a .json file saved from this app.' }; }
@@ -2152,8 +2172,9 @@ function viewHelp() {
     (H.undo ? '<button class="btn" data-action="backup-undo">Undo the last restore</button>' : '') + '</div>' + restoreCard +
     '<h3>Share products with friends</h3><p class="muted small" style="margin:0">A public link can not hold a shared library, so share the products you have entered as a file and send it in a message. It has only foods and barcodes, nothing personal. Send yours to the person who shared this app, and they can add your brands for everyone.</p>' +
     '<div class="ai-actions"><button class="btn primary" data-action="products-save">Download my products file</button><label class="btn" for="helpProducts">Add products from a friend</label><input type="file" id="helpProducts" data-help="productsfile" accept=".json,application/json,text/plain" class="sr-only"></div>' + prodCard +
-    ((state.unmatched || []).length ? '<h3>Foods not found (' + state.unmatched.length + ')</h3><p class="muted small" style="margin:0">Names typed into "Add several at once" and barcodes scanned in one-tap mode that matched nothing. Nothing here was added to your log. Export this list for whoever maintains this app’s food list — it is just names and numbers, nothing personal.</p>' +
-      '<div class="ai-actions"><button class="btn primary" data-action="unmatched-export">Export foods needing database entries</button></div>' : '') +
+    ((state.unmatched || []).length ? '<h3>Foods not found (' + state.unmatched.length + ')</h3><p class="muted small" style="margin:0">Names typed into "Add several at once" and barcodes scanned in one-tap mode that matched nothing. Nothing here was added to your log. Send this list to whoever maintains this app’s food list — it is just names and numbers, nothing personal. On a phone, this opens your normal share sheet (Messages, Mail, AirDrop) with the file already attached; otherwise it downloads.</p>' +
+      '<div class="ai-actions"><button class="btn primary" data-action="unmatched-export">Send foods needing database entries</button></div>' +
+      '<p class="muted small" style="margin:6px 0 0">A "' + esc('Send ' + state.unmatched.length + ' unmatched') + '" shortcut also sits next to "Help and backup" at the top of the app whenever there is something to send, so you do not have to come in here first.</p>' : '') +
     '<h3>Something wrong?</h3><p class="muted small" style="margin:0">Tap "Report a wrong number" under any nutrition facts or on a scanned product to copy a message you can send. If the app or the camera is not working, copy the support info and send that. It has no meals, weights or personal details.</p>' +
     '<div class="ai-actions"><button class="btn" data-action="support-copy">Copy support info</button></div>' +
     '<h3>Where the numbers come from</h3><ul class="sv-steps sv-src"><li>USDA FoodData Central (public domain): the food data and the brand barcode list, downloaded April 2026.</li><li>National Academies and NIH Office of Dietary Supplements: vitamin and mineral amounts. FDA: label Daily Values.</li><li>This is an independent hobby project, not connected to any of these organizations.</li></ul></div>';
@@ -2612,6 +2633,8 @@ function render() {
   const views = VIEWS;
   const aiTab = document.querySelector('.tabs button[data-tab="ai"]');           // nothing on this tab works without a live claude.ai connection: hide it rather than show an empty tab
   if (aiTab) { const off = AI.status === 'unavailable'; aiTab.hidden = off; if (off && ui.tab === 'ai') ui.tab = 'plan'; }
+  const uq = $('unmatchedQuick'), un = (state.unmatched || []).length;          // one-tap shortcut next to "Help and backup", so sending unmatched foods never needs a trip into Help first
+  if (uq) { uq.hidden = !un; if (un) uq.textContent = 'Send ' + un + ' unmatched'; }
   app.innerHTML = views[ui.tab]();
   if (ui.tab === 'meals') refreshPickOptions();
   if (ui.tab === 'scan') refreshLinkOptions();
@@ -4616,7 +4639,7 @@ document.addEventListener('click', e => {
   else if (a.startsWith('fa-') || a.startsWith('audit-')) { faClick(a, el); }
   else if (a.startsWith('bulk-')) { bulkClick(a, el); }
   else if (a.startsWith('scanbulk-')) { scanBulkClick(a); }
-  else if (a === 'unmatched-export') unmatchedExportSave();
+  else if (a === 'unmatched-export' || a === 'unmatched-export-quick') unmatchedExportSend();
   else if (a === 'qty-inc' || a === 'qty-dec' || a === 'remove-group') { qtyClick(a, el); }
   else if (a === 'quick-add') { quickAddMeal(el.dataset.slot, el.dataset.meal); }
 
@@ -4828,7 +4851,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.01-1';
+const APP_VERSION = '2026.10.01-3';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
