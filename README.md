@@ -205,6 +205,22 @@ smoothly with no flicker. It still closes normally when you tap Cancel or back o
 If you are updating an existing deployment, upload the new `index.html` and `version.json`
 from this `site` folder. `products.json` did not change.
 
+## What changed in 2026.10.02-2
+
+A speed tweak for scanning on phones without a fast built-in barcode reader (notably
+iPhone, where Safari has none at all -- Chrome on Android usually does): the live camera
+used to require reading the exact same barcode twice in a row before accepting it. That
+extra confirmation frame added real waiting time on a phone that is already decoding each
+frame slowly, for not much real safety -- the barcode's own built-in check digit, verified
+right after, already catches a garbled read far more reliably. It now accepts a barcode as
+soon as it reads cleanly once. (I could not test this against a real iPhone camera myself,
+since I don't have access to one -- if scanning still feels slow after this, or you start
+seeing a wrong product come up, let me know and we can look at a bigger change: swapping in
+a dedicated barcode-reading library in place of this app's own decoder.)
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
 ## Deploying it (you do this part; I cannot host anything myself)
 
 Any static host that serves plain files over HTTPS will do. The simplest is GitHub Pages:
