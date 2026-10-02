@@ -2007,19 +2007,32 @@ async function getDownloads() {                    // the "save a file" ability,
 const helpR1 = v => Math.round(v * 10) / 10;
 // ---- backup: everything you have, as the same small documents the sync uses ----
 const backupObject = () => ({ app: APP_ID, kind: 'backup', version: 1, saved: new Date().toISOString(), docs: docsFromState() });
-async function saveFile(filename, text, doneMsg) {
+async function saveFile(filename, text, doneMsg, onDone) {
   const dl = await getDownloads();
   const fallback = () => { ui.help.text = text; ui.help.msg = 'Saving a file is not available in this view. Copy the text below and keep it somewhere safe.'; ui.tab = 'help'; render(); };
   if (!dl || typeof dl.save !== 'function') return fallback();
-  try { await dl.save({ filename, data: text }); ui.help.msg = doneMsg; render(); toast(doneMsg); }
+  try { await dl.save({ filename, data: text }); ui.help.msg = doneMsg; render(); if (onDone) onDone(); else toast(doneMsg); }
   catch (e) { if (e && e.code === 'declined') { toast('Not saved.'); return; } fallback(); }
 }
 const backupSave = () => saveFile('meal-planner-backup-' + keyOf(new Date()) + '.json', JSON.stringify(backupObject()), 'Backup saved.');
 // ---- foods and barcodes that matched nothing (from "Add several at once" or one-tap barcode scanning): just names/numbers, for whoever maintains this app's food list ----
 const unmatchedSorted = () => (state.unmatched || []).slice().sort((a, b) => (b.n - a.n) || a.name.localeCompare(b.name));
-const unmatchedExportSave = () => saveFile('meal-planner-not-found-' + keyOf(new Date()) + '.json',
-  JSON.stringify({ app: APP_ID, kind: 'unmatched', version: 1, saved: new Date().toISOString(), items: unmatchedSorted() }, null, 2),
-  'Exported.');
+// Once the list has actually gone out -- a real download, or a completed share -- there is no reason to keep
+// re-sending the same old items forever. Clear it, but keep an "Undo" around for a few seconds in case the share
+// sheet secretly didn't go through, or this was tapped by mistake.
+function unmatchedMarkSent(n) {
+  const snapshot = state.unmatched;
+  state.unmatched = [];
+  saveState(); render();
+  toast('Marked ' + n + ' item' + (n === 1 ? '' : 's') + ' as sent.', () => { state.unmatched = snapshot; saveState(); render(); });
+}
+const unmatchedExportSave = () => {
+  const items = unmatchedSorted();
+  if (!items.length) return;
+  saveFile('meal-planner-not-found-' + keyOf(new Date()) + '.json',
+    JSON.stringify({ app: APP_ID, kind: 'unmatched', version: 1, saved: new Date().toISOString(), items }, null, 2),
+    'Exported.', () => unmatchedMarkSent(items.length));
+};
 // One tap, sent straight out: on a phone that supports it, this opens the normal share sheet (Messages, Mail,
 // AirDrop, whatever is installed) with the file already attached, so there is no separate "now go find the file
 // and attach it yourself" step. Falls back to an ordinary download wherever sharing a file is not available.
@@ -2033,11 +2046,11 @@ async function unmatchedExportSend() {
       const file = new File([text], filename, { type: 'application/json' });
       if (navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: 'Foods not found', text: items.length + ' food(s)/barcode(s) not in the database' });
-        toast('Shared.');
+        unmatchedMarkSent(items.length);
         return;
       }
     }
-  } catch (e) { if (e && e.name === 'AbortError') return; /* person backed out of the share sheet: do nothing, do not also download */ }
+  } catch (e) { if (e && e.name === 'AbortError') return; /* person backed out of the share sheet: do nothing, do not also download, and do not clear anything */ }
   unmatchedExportSave();
 }
 function helpParse(text, kind) {
@@ -2172,7 +2185,7 @@ function viewHelp() {
     (H.undo ? '<button class="btn" data-action="backup-undo">Undo the last restore</button>' : '') + '</div>' + restoreCard +
     '<h3>Share products with friends</h3><p class="muted small" style="margin:0">A public link can not hold a shared library, so share the products you have entered as a file and send it in a message. It has only foods and barcodes, nothing personal. Send yours to the person who shared this app, and they can add your brands for everyone.</p>' +
     '<div class="ai-actions"><button class="btn primary" data-action="products-save">Download my products file</button><label class="btn" for="helpProducts">Add products from a friend</label><input type="file" id="helpProducts" data-help="productsfile" accept=".json,application/json,text/plain" class="sr-only"></div>' + prodCard +
-    ((state.unmatched || []).length ? '<h3>Foods not found (' + state.unmatched.length + ')</h3><p class="muted small" style="margin:0">Names typed into "Add several at once" and barcodes scanned in one-tap mode that matched nothing. Nothing here was added to your log. Send this list to whoever maintains this app’s food list — it is just names and numbers, nothing personal. On a phone, this opens your normal share sheet (Messages, Mail, AirDrop) with the file already attached; otherwise it downloads.</p>' +
+    ((state.unmatched || []).length ? '<h3>Foods not found (' + state.unmatched.length + ')</h3><p class="muted small" style="margin:0">Names typed into "Add several at once" and barcodes scanned in one-tap mode that matched nothing. Nothing here was added to your log. Send this list to whoever maintains this app’s food list — it is just names and numbers, nothing personal. On a phone, this opens your normal share sheet (Messages, Mail, AirDrop) with the file already attached; otherwise it downloads. Once it actually goes out, this list clears itself (with a few seconds to undo, in case that was a mistake) — so a future count only shows what is new since the last time you sent it.</p>' +
       '<div class="ai-actions"><button class="btn primary" data-action="unmatched-export">Send foods needing database entries</button></div>' +
       '<p class="muted small" style="margin:6px 0 0">A "' + esc('Send ' + state.unmatched.length + ' unmatched') + '" shortcut also sits next to "Help and backup" at the top of the app whenever there is something to send, so you do not have to come in here first.</p>' : '') +
     '<h3>Something wrong?</h3><p class="muted small" style="margin:0">Tap "Report a wrong number" under any nutrition facts or on a scanned product to copy a message you can send. If the app or the camera is not working, copy the support info and send that. It has no meals, weights or personal details.</p>' +
@@ -3143,7 +3156,7 @@ async function startLive() {
   $('scanLive').hidden = false;
   $('scanMsg').textContent = 'Point the camera at a barcode';
   SCAN.lastCode = null; SCAN.hits = 0; ui.scan.msg = '';
-  SCAN.timer = setInterval(scanFrame, 140);
+  SCAN.timer = setInterval(scanFrame, 100);
 }
 function stopLive() {
   clearInterval(SCAN.timer); SCAN.timer = null;
@@ -3159,7 +3172,7 @@ function resumeLive() {
   if (!SCAN.stream) { startLive(); return; }     // stream is gone for some reason: fall back to a full (re)start
   SCAN.lastCode = null; SCAN.hits = 0;
   const msg = $('scanMsg'); if (msg) msg.textContent = 'Point the camera at a barcode';
-  SCAN.timer = setInterval(scanFrame, 140);
+  SCAN.timer = setInterval(scanFrame, 100);
 }
 async function scanFrame() {
   if (SCAN.busy || !SCAN.stream) return;
@@ -3178,14 +3191,13 @@ async function scanFrame() {
       code = r && r.code;
     }
     if (code) {
-      if (code === SCAN.lastCode) SCAN.hits++; else { SCAN.lastCode = code; SCAN.hits = 1; }
-      if (SCAN.hits >= 2) {                                  // the same code in two frames in a row
-        // Bulk mode (continuous scanning) keeps the same camera open and just pauses the detector; everything else
-        // (reviewing one scan before the next) still fully stops the camera, same as before.
-        if (state.autoScan) pauseLive(); else stopLive();
-        try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* ignore */ }
-        handleCode(...asScanned(code), true);     // true: this code came from the live camera, so auto mode may resume it for the next one
-      }
+      // Used to wait for the same code twice in a row before accepting it. That extra confirmation frame is pure
+      // added wait on a phone (notably iPhone, with no built-in detector) where one decode already takes a while --
+      // and it added little real safety, since the barcode's own check digit (verified in handleCode) already
+      // rejects a garbled read far more reliably than "did the decoder repeat itself" does.
+      if (state.autoScan) pauseLive(); else stopLive();
+      try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* ignore */ }
+      handleCode(...asScanned(code), true);     // true: this code came from the live camera, so auto mode may resume it for the next one
     } else SCAN.hits = 0;
   } catch (e) { /* skip this frame */ } finally { SCAN.busy = false; }
 }
@@ -4862,7 +4874,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.02-1';
+const APP_VERSION = '2026.10.02-4';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
@@ -4894,14 +4906,14 @@ async function loadProducts() {
   } catch (e) { SA.productsMsg = 'The product list could not be loaded, so barcodes from the brand list are not recognised right now.'; }
   render();
 }
-saveFile = async function (filename, text, doneMsg) {                      // an ordinary browser download
+saveFile = async function (filename, text, doneMsg, onDone) {              // an ordinary browser download
   try {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
     const a = document.createElement('a'); a.href = url; a.download = filename; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
     if (/backup/.test(filename)) { state.lastBackup = new Date().toISOString(); saveState(); }
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().then(p => { SA.persisted = p; }, () => {});
-    ui.help.msg = doneMsg; render(); toast(doneMsg);
+    ui.help.msg = doneMsg; render(); if (onDone) onDone(); else toast(doneMsg);
   } catch (e) { ui.help.text = text; ui.help.msg = 'Saving a file did not work here. Copy the text below and keep it somewhere safe.'; ui.tab = 'help'; render(); }
 };
 const daysSince = iso => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 864e5) : null;
@@ -4947,7 +4959,7 @@ async function checkForUpdate() {
 }
 async function updateNow() {                                              // forget the saved copy of the site (never your data), then load the new one
   try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(r => r.unregister())); const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); } catch (e) { /* still reload */ }
-  location.reload();
+  location.href = location.pathname + '?v=' + Date.now();                 // a plain reload can still be handed a cached copy by the browser or GitHub's own CDN; a new URL forces a real fetch
 }
 document.addEventListener('click', e => {
   const el = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
