@@ -1013,7 +1013,10 @@ function scanAutoAdd(f, live) {
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(ui.scan.slot) + (live ? '. Scanning the next one…' : '. Ready for the next one.') });
   render();
   toast('Added to ' + SLOT_LABEL(ui.scan.slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
-  if (live) resumeLive();       // bulk camera mode: keep going without a tap, on the SAME open stream (no restart, no flicker)
+  // The live camera view covers the rest of the screen, so the message above (and the toast) can go unseen while
+  // you're looking at the viewfinder. Show it right on the camera overlay itself too, and give it a moment before
+  // the next scan resets it -- without this, one-tap mode could look like it was doing nothing at all.
+  if (live) { const el = $('scanMsg'); if (el) el.textContent = '✓ Added ' + r.name; resumeLive(900); }
   return true;
 }
 // Bulk mode, barcode not recognized: do not stop to ask for label details (that would break the run of scans). Note it for
@@ -1022,7 +1025,7 @@ function scanAutoMiss(code, live) {
   trackUnmatched('Barcode ' + showCode(code), code);
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Not in the database yet — noted for later.' + (live ? ' Scanning the next one…' : ' Ready for the next one.') });
   render();
-  if (live) resumeLive();
+  if (live) { const el = $('scanMsg'); if (el) el.textContent = 'Not in the database — noted for later'; resumeLive(900); }
 }
 
 /* ---------- add several barcodes at once, by pasting their numbers ---------- */
@@ -3168,11 +3171,17 @@ function stopLive() {
 // Bulk mode between one barcode and the next: pause watching frames, but never tear down the camera itself. Releasing and
 // re-requesting the stream (the old approach) made the camera visibly restart -- a flicker -- on every single scan.
 function pauseLive() { clearInterval(SCAN.timer); SCAN.timer = null; }
-function resumeLive() {
+// delayMs: hold off resetting the on-screen message and restarting the scan loop, so a message set just before
+// calling this (what a scan just found, or that it found nothing) has a moment to actually be seen, instead of
+// being wiped out instantly -- which, in one-tap mode, used to make it look like scanning did nothing at all.
+function resumeLive(delayMs) {
   if (!SCAN.stream) { startLive(); return; }     // stream is gone for some reason: fall back to a full (re)start
-  SCAN.lastCode = null; SCAN.hits = 0;
-  const msg = $('scanMsg'); if (msg) msg.textContent = 'Point the camera at a barcode';
-  SCAN.timer = setInterval(scanFrame, 100);
+  const go = () => {
+    SCAN.lastCode = null; SCAN.hits = 0;
+    const msg = $('scanMsg'); if (msg) msg.textContent = 'Point the camera at a barcode';
+    SCAN.timer = setInterval(scanFrame, 100);
+  };
+  if (delayMs) setTimeout(go, delayMs); else go();
 }
 async function scanFrame() {
   if (SCAN.busy || !SCAN.stream) return;
@@ -4888,7 +4897,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.02-6';
+const APP_VERSION = '2026.10.02-7';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
