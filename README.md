@@ -193,6 +193,18 @@ Sending the "Foods not found" list is now one tap, from right next to "Help and 
 If you are updating an existing deployment, upload the new `index.html` and `version.json`
 from this `site` folder. `products.json` did not change.
 
+## What changed in 2026.10.02-1
+
+Fixed a real bug: with "Log a known barcode the instant it scans" turned on, the live
+camera used to visibly flicker on every single scan. It was fully releasing the camera and
+asking for a brand new one each time to keep going, instead of just carrying on with the one
+already open. It now keeps the same camera stream open the whole time you are scanning in a
+row (the camera opens once and stays on), so a run of barcodes -- 5, 20, however many -- goes
+smoothly with no flicker. It still closes normally when you tap Cancel or back out.
+
+If you are updating an existing deployment, upload the new `index.html` and `version.json`
+from this `site` folder. `products.json` did not change.
+
 ## Deploying it (you do this part; I cannot host anything myself)
 
 Any static host that serves plain files over HTTPS will do. The simplest is GitHub Pages:
