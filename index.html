@@ -3218,7 +3218,15 @@ function handleCode(raw, fmt, live) {
   const code = normalizeCode(raw, fmt);
   if (!code) { ui.scan.msg = 'That number is not a valid barcode. Check the digits and try again.'; render(); return false; }
   Object.assign(ui.scan, { code, typed: showCode(code), msg: '', form: null, linkQuery: '', photoFailed: false, brandSkip: '' });
-  const f = foodForCode(code);
+  let f = foodForCode(code);
+  if (!f && state.autoScan) {
+    // One-tap mode only ever checked barcodes already linked on this device, so the very first time it saw a
+    // barcode that is genuinely in the built-in brand list, it said "not in the database yet" -- exactly like a
+    // real miss -- instead of recognizing it. Check the brand list too, same as "add several at once" already
+    // does, and link it in so every scan of this barcode after this one is instant.
+    const rec = brandRecord(code);
+    if (rec) { f = brandFood(rec); if (!state.customFoods.some(x => x.id === f.id)) state.customFoods.push(f); state.barcodes[code] = f.id; }
+  }
   if (f) { setDefaultAmount(f); if (state.autoScan && scanAutoAdd(f, live)) return true; }
   else if (state.autoScan) { scanAutoMiss(code, live); return true; }
   render();
@@ -4874,7 +4882,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.02-4';
+const APP_VERSION = '2026.10.02-5';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
