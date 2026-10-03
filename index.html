@@ -318,6 +318,8 @@ textarea { resize: vertical; display: block; }
 .scan-guide { position: absolute; left: 7%; right: 7%; top: 50%; height: 24vh; transform: translateY(-60%); border: 3px solid #fff; border-radius: 14px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.4); pointer-events: none; }
 .scan-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 16px 28px; display: flex; flex-direction: column; align-items: center; gap: 14px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.7)); }
 .scan-msg { margin: 0; color: #fff; text-align: center; font-weight: 500; }
+.scan-hint { margin: -6px 0 0; color: rgba(255, 255, 255, 0.8); font-size: 0.85rem; text-align: center; }
+.scan-diag { margin: -8px 0 0; color: rgba(255, 255, 255, 0.55); font-size: 0.7rem; text-align: center; min-height: 1em; }
 /* A big, hard-to-miss symbol over the live camera view right after a scan -- the text message alone was easy to miss
    while looking at the viewfinder instead of reading it. Plain text glyph (no image), so it works offline too. */
 .scan-flash { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; opacity: 0; transition: opacity 0.15s ease-out; font-size: 30vmin; line-height: 1; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6); }
@@ -527,6 +529,8 @@ textarea { resize: vertical; display: block; }
   <div class="scan-guide"></div>
   <div id="scanFlash" class="scan-flash" aria-hidden="true"></div>
   <div class="scan-bottom"><p id="scanMsg" class="scan-msg" role="status">Point the camera at a barcode</p>
+    <p class="scan-hint">Not catching it? Back up a little so it's sharp, or tap the picture for a closer read.</p>
+    <p id="scanDiag" class="scan-diag" aria-hidden="true"></p>
     <button class="btn" data-action="scan-cancel">Cancel</button></div>
 </div>
 
@@ -1053,8 +1057,8 @@ function scanBulkBoxHtml() {
     '<label for="scanBulkText" class="sr-only">Barcode numbers, one per line</label>' +
     '<textarea id="scanBulkText" data-scanbulk="text" rows="4" placeholder="One barcode number per line" style="width:100%">' + esc(B.text) + '</textarea>' +
     '<div class="ai-row" style="margin-top:6px"><div><label for="scanBulkSlot">Meal</label><select id="scanBulkSlot" data-scanbulk="slot">' + optionsHtml(SLOTS, ui.scan.slot) + '</select></div></div>' +
-    '<div class="ai-actions" style="margin-top:6px"><button class="btn primary" data-action="scanbulk-submit">Look up and add</button><button class="btn" data-action="scanbulk-cancel">Cancel</button></div>' +
-    '<p class="muted small" style="margin:6px 0 0">Known barcodes (including the USDA branded list) are added right away. Anything not recognized is not added, but is noted under Help so it can be added to the food list later.</p></div>';
+    '<div class="ai-actions" style="margin-top:6px"><button class="btn primary" data-action="scanbulk-submit"' + (B.busy ? ' disabled' : '') + '>' + (B.busy ? 'Looking these up…' : 'Look up and add') + '</button><button class="btn" data-action="scanbulk-cancel"' + (B.busy ? ' disabled' : '') + '>Cancel</button></div>' +
+    '<p class="muted small" style="margin:6px 0 0">Known barcodes (including the USDA branded list) are added right away. Anything else is checked against Open Food Facts; anything still not recognized is not added, but is noted under Help so it can be added later.</p></div>';
 }
 function scanBulkInput(t) { if (t.dataset.scanbulk === 'text') ui.scanBulk.text = t.value; }
 function scanBulkChange(t) { if (t.dataset.scanbulk === 'slot') ui.scan.slot = t.value; }
@@ -1063,13 +1067,14 @@ function scanBulkClick(a) {
   else if (a === 'scanbulk-cancel') { ui.scanBulk.open = false; ui.scanBulk.text = ''; render(); }
   else if (a === 'scanbulk-submit') scanBulkSubmit();
 }
-function scanBulkSubmit() {
+async function scanBulkSubmit() {
   const lines = ui.scanBulk.text.split('\n').map(s => s.trim()).filter(Boolean);
   if (!lines.length) { toast('Type or paste at least one barcode number, one per line.'); return; }
+  ui.scanBulk.busy = true; render();
   let added = 0; const misses = [];
-  lines.forEach(raw => {
+  for (const raw of lines) {
     const code = normalizeCode(raw);
-    if (!code) { trackUnmatched('Barcode ' + raw.slice(0, 40) + ' (not a valid number)'); misses.push(raw); return; }
+    if (!code) { trackUnmatched('Barcode ' + raw.slice(0, 40) + ' (not a valid number)'); misses.push(raw); continue; }
     let food = foodForCode(code);
     if (!food) {
       const rec = brandRecord(code);
@@ -1079,12 +1084,20 @@ function scanBulkSubmit() {
         state.barcodes[code] = food.id;
       }
     }
+    if (!food && !brandRecord(code)) {
+      if (!(code in OFF_CACHE)) OFF_CACHE[code] = await lookupOpenFoodFacts(code);
+      if (OFF_CACHE[code]) {
+        food = offFood(OFF_CACHE[code]);
+        if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
+        state.barcodes[code] = food.id;
+      }
+    }
     if (food) {
       const hasServing = !!(food.serving && food.serving.grams > 0);
       if (logFood(food, hasServing ? 1 : 100, hasServing ? 1 : 0, ui.scan.slot)) added++;
     } else { trackUnmatched('Barcode ' + showCode(code), code); misses.push(raw); }
-  });
-  ui.scanBulk.text = ''; ui.scanBulk.open = false;
+  }
+  ui.scanBulk.text = ''; ui.scanBulk.open = false; ui.scanBulk.busy = false;
   saveState();
   render();
   toast(added + ' added to ' + SLOT_LABEL(ui.scan.slot) + (misses.length ? ', ' + misses.length + ' not found (noted under Help).' : '.'));
@@ -3082,8 +3095,8 @@ function decodeGrayBoth(gray, w, h, y0, y1, rows) {
 
 const SCAN = { stream: null, timer: null, detector: undefined, busy: false, lastCode: null, hits: 0, lastFile: null, canImages: false, cv: null, ctl: null, liveErr: '' };
 const guessSlot = () => { const h = new Date().getHours(); return h < 11 ? 'breakfast' : h < 15 ? 'lunch' : h < 17 ? 'snacks' : 'dinner'; };
-ui.scan = { code: '', typed: '', msg: '', qty: 100, unit: 0, slot: guessSlot(), form: null, linkQuery: '', busy: false, photoFailed: false };
-ui.scanBulk = { open: false, text: '' };   // "Add several barcodes at once": paste a list of barcode numbers instead of scanning or typing one at a time. UI-only, not saved.
+ui.scan = { code: '', typed: '', msg: '', qty: 100, unit: 0, slot: guessSlot(), form: null, linkQuery: '', busy: false, photoFailed: false, brandSkip: '', offSkip: '' };
+ui.scanBulk = { open: false, text: '', busy: false };   // "Add several barcodes at once": paste a list of barcode numbers instead of scanning or typing one at a time. UI-only, not saved.
 const showCode = c => c.length === 13 && c[0] === '0' ? c.slice(1) : c;   // UPC-A is shown as 12 digits, the way it is printed
 const foodForCode = code => { const id = (state.barcodes || {})[code]; return id ? foodMap()[id] || null : null; };
 
@@ -3117,20 +3130,31 @@ async function decodePhoto(file) {
   try {
     const det = await ensureDetector();
     if (det) { try { const c = detectorCode(await det.detect(img)); if (c) return c; } catch (e) { /* fall through */ } }
-    const W0 = img.naturalWidth, H0 = img.naturalHeight;
-    // Fast sizes first. A barcode that fills under about 15% of the picture (photographed from a little way off) needs the full-size picture, with more scan lines.
-    const seen = new Set();
-    for (const width of [1400, 2400, 3600, 1000, 700]) {
-      const sc = Math.min(1, width / W0), w = Math.round(W0 * sc), h = Math.round(H0 * sc);
-      if (seen.has(w)) continue;
-      seen.add(w);
-      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-      const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(img, 0, 0, w, h);
-      const r = decodeGrayBoth(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.05, 0.95, width >= 2400 ? 150 : 60);
-      if (r) return r.code;
-    }
-    return null;
+    return decodeDeep(img, img.naturalWidth, img.naturalHeight);
   } finally { URL.revokeObjectURL(url); }
+}
+// The thorough reader: fast sizes first; a barcode that fills under about 15% of the picture (taken from a little way
+// off) needs the full-size picture, with more scan lines. Used for photos, and for a tap on the live camera picture.
+function decodeDeep(src, W0, H0) {
+  const seen = new Set();
+  for (const width of [1400, 2400, 3600, 1000, 700]) {
+    const sc = Math.min(1, width / W0), w = Math.round(W0 * sc), h = Math.round(H0 * sc);
+    if (seen.has(w)) continue;
+    seen.add(w);
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(src, 0, 0, w, h);
+    const r = decodeGrayBoth(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.05, 0.95, width >= 2400 ? 150 : 60);
+    if (r) return r.code;
+  }
+  // A small picture (a live camera frame, not a full photo): blow it up 2x with smooth interpolation as a last try --
+  // see decodeBandUpscaled for why that recovers small, slightly soft barcodes.
+  if (W0 < 2400) {
+    const w = W0 * 2, h = H0 * 2, cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    const cx = cv.getContext('2d', { willReadFrequently: true }); cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = 'high'; cx.drawImage(src, 0, 0, w, h);
+    const r = decodeGrayBoth(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.05, 0.95, 150);
+    if (r) return r.code;
+  }
+  return null;
 }
 
 /* ---------- can the live camera work here, and if not, why? ----------
@@ -3173,7 +3197,33 @@ async function startLive() {
     SCAN.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, focusMode: { ideal: 'continuous' } }, audio: false });
     SCAN.liveErr = '';
   } catch (e) { SCAN.liveErr = (e && e.name) || 'Error'; const b = scanLiveBlock(); scanFail(b ? b.msg : 'The live camera did not start. Use "Take a photo" instead.'); return; }
+  // iPhone Pro models: the plain "Back Camera" a web page gets by default cannot focus closer than roughly 8 inches,
+  // and unlike the built-in Camera app, a web page never gets switched to the macro lens automatically -- so a barcode
+  // held at a normal distance is simply blurry. The phone also offers "Back Triple Camera" / "Back Dual Wide Camera",
+  // multi-lens devices that DO switch to macro on their own. Device names are only visible after permission was
+  // granted (just now), so look for one and move to it; on any failure, go straight back to the ordinary camera.
+  // The multi-lens device starts at its widest lens; a zoom of 2 brings it back to the normal view. "Triple" only exists
+  // on Pro models, whose widest lens can focus up close, so it is kept even where zoom is not offered. "Dual Wide" also
+  // exists on regular models, whose widest lens may not focus at all, so it is only kept when zoom can be set.
+  const plain = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false };
+  try {
+    const cur = SCAN.stream.getVideoTracks()[0];
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    const multi = devs.find(d => /triple/i.test(d.label)) || devs.find(d => /dual wide/i.test(d.label));
+    if (multi && cur && cur.label !== multi.label) {
+      SCAN.stream.getTracks().forEach(t => t.stop());
+      try {
+        SCAN.stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: multi.deviceId }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false });
+        const t = SCAN.stream.getVideoTracks()[0], caps = t && t.getCapabilities ? t.getCapabilities() : {};
+        const canZoom = !!(caps.zoom && caps.zoom.max >= 2);
+        if (!canZoom && !/triple/i.test(multi.label)) { SCAN.stream.getTracks().forEach(x => x.stop()); SCAN.stream = await navigator.mediaDevices.getUserMedia(plain); }
+      } catch (e) { SCAN.stream = await navigator.mediaDevices.getUserMedia(plain); }
+    }
+  } catch (e) { if (!SCAN.stream || !SCAN.stream.active) { SCAN.stream = null; scanFail('The live camera did not start. Use "Take a photo" instead.'); return; } }
   const track = SCAN.stream.getVideoTracks()[0];
+  // Zoom in a little where the browser allows it, so a barcode held far enough away to be in focus still fills
+  // enough of the picture to read. (On the multi-lens camera, 2 is roughly the normal 1x view of the Camera app.)
+  try { const caps = track && track.getCapabilities ? track.getCapabilities() : {}; if (caps.zoom && caps.zoom.max >= 2) await track.applyConstraints({ advanced: [{ zoom: 2 }] }); } catch (e) { /* not supported here */ }
   // Ask the camera to keep re-focusing on its own (macro-ish barcodes up close are exactly where a camera that
   // focused once far away and stopped would blur). Not every browser/device honors this -- Safari on iPhone may
   // ignore it entirely -- so every call here is wrapped and failures are silently skipped, never shown to the person.
@@ -3189,9 +3239,18 @@ async function startLive() {
   $('scanMsg').textContent = 'Point the camera at a barcode';
   SCAN.lastCode = null; SCAN.hits = 0; ui.scan.msg = '';
   SCAN.timer = setInterval(scanFrame, 100);
+  // A small readout of what the camera is really delivering (which lens, what size, how many frames get read each
+  // second), so a report of "it never catches anything" comes with facts instead of another round of guessing.
+  SCAN.reads = 0; clearInterval(SCAN.diagTimer);
+  SCAN.diagTimer = setInterval(() => {
+    const d = $('scanDiag'), vv = $('scanVideo'), t = SCAN.stream && SCAN.stream.getVideoTracks()[0];
+    if (d && vv) d.textContent = ((t && t.label) || 'camera') + ' · ' + vv.videoWidth + '×' + vv.videoHeight + ' · ' + SCAN.reads + ' reads/s';
+    SCAN.reads = 0;
+  }, 1000);
 }
 function stopLive() {
   clearInterval(SCAN.timer); SCAN.timer = null;
+  clearInterval(SCAN.diagTimer); SCAN.diagTimer = null;
   if (SCAN.stream) SCAN.stream.getTracks().forEach(t => t.stop());
   SCAN.stream = null;
   SCAN.cap = null;
@@ -3240,21 +3299,63 @@ async function scanFrame() {
       const w = Math.min(srcW, 1920), h = Math.round(w * srcH / srcW);
       const cv = SCAN.cv || (SCAN.cv = document.createElement('canvas')); cv.width = w; cv.height = h;
       const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(src, 0, 0, w, h);
+      // The decoder only trusts a code that several scan lines agree on. Lines spread evenly over the whole frame
+      // leave only a handful crossing a barcode held in the on-screen box, so read the box's band densely first,
+      // then the rest of the frame, then the frame turned sideways (a barcode held vertically).
+      const gray = toGray(cx.getImageData(0, 0, w, h).data, w * h);
+      let r = decodeGray(gray, w, h, 0.3, 0.7, 40) || decodeGray(gray, w, h, 0.1, 0.9, 30);
+      if (!r) r = decodeGray(transposeGray(gray, w, h), h, w, 0.2, 0.8, 40);
+      if (!r) r = decodeBandUpscaled(src, srcW, srcH);
       if (src !== v && src.close) try { src.close(); } catch (e) { /* ImageBitmap cleanup; fine either way */ }
-      const r = decodeGrayBoth(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.1, 0.9, 50);
       code = r && r.code;
     }
-    if (code) {
-      // Used to wait for the same code twice in a row before accepting it. That extra confirmation frame is pure
-      // added wait on a phone (notably iPhone, with no built-in detector) where one decode already takes a while --
-      // and it added little real safety, since the barcode's own check digit (verified in handleCode) already
-      // rejects a garbled read far more reliably than "did the decoder repeat itself" does.
-      if (state.autoScan) pauseLive(); else stopLive();
-      try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* ignore */ }
-      handleCode(...asScanned(code), true);     // true: this code came from the live camera, so auto mode may resume it for the next one
-    } else SCAN.hits = 0;
+    SCAN.reads = (SCAN.reads || 0) + 1;
+    if (code) liveFound(code); else SCAN.hits = 0;
   } catch (e) { /* skip this frame */ } finally { SCAN.busy = false; }
 }
+// A barcode held far enough back to be in focus is small in the frame: each bar is only 2-3 pixels wide, and
+// rounding every bar to whole pixels throws its width off by up to 40% -- too much to tell the digits apart. Blowing
+// up just the on-screen box's band 2x with smooth interpolation lets the edges fall between pixels instead, which
+// recovers that precision. Only tried when the ordinary passes found nothing, and only on that band, to stay cheap.
+function decodeBandUpscaled(src, srcW, srcH) {
+  const y0 = Math.round(srcH * 0.3), bh = Math.round(srcH * 0.4);
+  const w = Math.min(srcW * 2, 3840), sc = w / srcW, h = Math.round(bh * sc);
+  const cv = SCAN.cv2 || (SCAN.cv2 = document.createElement('canvas')); cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d', { willReadFrequently: true });
+  cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = 'high';
+  cx.drawImage(src, 0, y0, srcW, bh, 0, 0, w, h);
+  return decodeGray(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.05, 0.95, 30);
+}
+// A code came from the live camera (the continuous reader, or a tap for a harder read of one frame).
+function liveFound(code) {
+  // Used to wait for the same code twice in a row before accepting it. That extra confirmation frame is pure added
+  // wait on a phone with no built-in detector, and the check digit (verified in handleCode) already rejects a garbled
+  // read far more reliably than "did the decoder repeat itself" does.
+  if (state.autoScan) pauseLive(); else stopLive();
+  try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* ignore */ }
+  handleCode(...asScanned(code), true);     // true: this code came from the live camera, so auto mode may resume it for the next one
+}
+// Tap the camera picture: freeze on this one frame and read it with the same, much more thorough reader a
+// photo gets (several sizes, far more scan lines) -- the reader that does work on this phone -- without having
+// to leave the live view and take a photo.
+async function liveDeepRead() {
+  const v = $('scanVideo');
+  if (!SCAN.stream || !SCAN.timer || !v || !v.videoWidth || SCAN.deep) return;
+  SCAN.deep = true; pauseLive();
+  const msg = $('scanMsg'); if (msg) msg.textContent = 'Reading this frame…';
+  let code = null;
+  try {
+    const cv = document.createElement('canvas'); cv.width = v.videoWidth; cv.height = v.videoHeight;
+    cv.getContext('2d').drawImage(v, 0, 0);     // freeze this exact frame first; the video keeps moving while we read
+    await new Promise(r => setTimeout(r, 30));  // let the message paint before the heavy read
+    code = decodeDeep(cv, cv.width, cv.height);
+  } catch (e) { code = null; }
+  SCAN.deep = false;
+  if (code) { liveFound(code); return; }
+  if (msg) msg.textContent = 'Could not read that frame — hold steady, about 6–10 inches away, and tap again';
+  resumeLive(1600);
+}
+{ const sl = $('scanLive'); if (sl && sl.addEventListener) sl.addEventListener('click', e => { if (!(e.target && e.target.closest && e.target.closest('button'))) liveDeepRead(); }); }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && SCAN.stream) stopLive();
   if (e.key === 'Enter' && e.target && e.target.id === 'scanCode') scanClick('scan-lookup', { dataset: {} });
@@ -3268,10 +3369,10 @@ function setDefaultAmount(f) {
   ui.scan.unit = hasServing ? 1 : 0;
   ui.scan.qty = hasServing ? 1 : 100;
 }
-function handleCode(raw, fmt, live) {
+async function handleCode(raw, fmt, live) {
   const code = normalizeCode(raw, fmt);
   if (!code) { ui.scan.msg = 'That number is not a valid barcode. Check the digits and try again.'; render(); return false; }
-  Object.assign(ui.scan, { code, typed: showCode(code), msg: '', form: null, linkQuery: '', photoFailed: false, brandSkip: '' });
+  Object.assign(ui.scan, { code, typed: showCode(code), msg: '', form: null, linkQuery: '', photoFailed: false, brandSkip: '', offSkip: '' });
   let f = foodForCode(code);
   if (!f && state.autoScan) {
     // One-tap mode only ever checked barcodes already linked on this device, so the very first time it saw a
@@ -3280,6 +3381,25 @@ function handleCode(raw, fmt, live) {
     // does, and link it in so every scan of this barcode after this one is instant.
     const rec = brandRecord(code);
     if (rec) { f = brandFood(rec); if (!state.customFoods.some(x => x.id === f.id)) state.customFoods.push(f); state.barcodes[code] = f.id; }
+  }
+  const needsOff = !f && !brandRecord(code) && !(code in OFF_CACHE);
+  if (needsOff) {
+    if (live) {
+      // Live camera scanning should never pause waiting on the network -- the usual immediate miss/hit feedback
+      // below still happens right away, and a slower lookup is left to catch up quietly in the background
+      // (see checkOffInBackground) instead of making every miss wait on it.
+      checkOffInBackground(code);
+    } else {
+      // A typed/photo/pasted lookup is already a deliberate, one-at-a-time action with the person watching the
+      // screen, so a short wait here is fine -- same as "Reading the photo..." already is. This is the one point
+      // the app reaches out to another website; see offCardHtml and the README for what that trades away.
+      ui.scan.msg = 'Checking a product database…'; render();
+      const rec = await lookupOpenFoodFacts(code);
+      if (ui.scan.code !== code) return true;      // the person moved on to a different barcode while this was in flight
+      OFF_CACHE[code] = rec;
+      ui.scan.msg = '';
+      if (!f && state.autoScan && rec) { f = offFood(rec); if (!state.customFoods.some(x => x.id === f.id)) state.customFoods.push(f); state.barcodes[code] = f.id; }
+    }
   }
   if (f) { setDefaultAmount(f); if (state.autoScan && scanAutoAdd(f, live)) return true; }
   else if (state.autoScan) { scanAutoMiss(code, live); return true; }
@@ -3349,6 +3469,74 @@ function brandFood(rec) {
   [['vd', 17], ['ca', 15], ['fe', 16]].forEach(([k, x]) => { if (rec[x] != null) mn[MN_KEYS.indexOf(k)] = rec[x]; });
   if (mn.some(v => v !== null)) food.mn = mn;
   return food;
+}
+/* ---------- Open Food Facts: a live, free lookup for barcodes the snapshotted USDA list does not happen to have ----------
+   This is the one place the app talks to another website. It sends only the barcode number (nothing about you or
+   your food log) to a free, public, crowd-sourced product database, and only when a scan is not already known on
+   this device and not in the built-in USDA list. See the README and Help for the privacy trade-off this is. */
+const OFF_CACHE = {};        // code -> a BRAND_PACK-shaped record, or null once a lookup has come back with nothing usable
+function offFood(rec) { const food = brandFood(rec); food.id = 'custom-off-' + rec[0]; return food; }
+async function lookupOpenFoodFacts(code) {
+  if (navigator.onLine === false) return null;                        // known offline: do not even try
+  try {
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 5000);
+    let res;
+    try { res = await fetch('https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(code) + '.json?fields=product_name,product_name_en,brands,serving_size,nutriments', { signal: ctl.signal }); }
+    finally { clearTimeout(timer); }
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (!j || j.status !== 1 || !j.product) return null;              // not in Open Food Facts either
+    const p = j.product, n = p.nutriments || {};
+    const name = ((p.product_name_en || p.product_name || '') + '').trim();
+    const kcal = n['energy-kcal_100g'] != null ? n['energy-kcal_100g'] : (n['energy_100g'] != null ? n['energy_100g'] / 4.184 : null);
+    const prot = n.proteins_100g, carb = n.carbohydrates_100g, fat = n.fat_100g;
+    // Require a name and all four headline numbers. A record missing any of these is treated the same as "not
+    // found" -- showing a half-blank nutrition card would look authoritative while quietly being wrong.
+    if (!name || kcal == null || prot == null || carb == null || fat == null) return null;
+    const mg = x => x == null ? null : x * 1000;                      // Open Food Facts reports these in grams per 100g; the app wants mg
+    let grams = 100, label = '100 g';
+    const sizeMatch = /(\d+(?:\.\d+)?)\s*g\b/i.exec(p.serving_size || '');
+    if (sizeMatch) { grams = parseFloat(sizeMatch[1]); label = String(p.serving_size || '1 serving').slice(0, 30); }
+    const brand = ((p.brands || '').split(',')[0] || 'Open Food Facts').trim() || 'Open Food Facts';
+    return [code, name.slice(0, 80), brand, grams, 'g', kcal, prot, carb, fat, mg(n.sodium_100g), n.sugars_100g, n.fiber_100g,
+      n['saturated-fat_100g'], mg(n.cholesterol_100g), mg(n.potassium_100g), mg(n.calcium_100g), mg(n.iron_100g), n['vitamin-d_100g'],
+      new Date().toISOString().slice(0, 7), label, 0];
+  } catch (e) { return null; }                                        // offline, blocked, timed out, or malformed JSON -- same as "not found"
+}
+function offCardHtml(rec) {
+  const per = rec[3] / 100, srv = x => rec[x] == null ? null : rec[x] * per;
+  const extra = [srv(9) != null ? n0(srv(9)) + ' mg sodium' : 'sodium not listed', srv(14) != null ? n0(srv(14)) + ' mg potassium' : 'potassium not listed'].join(', ');
+  return '<article class="ai-card brand-card"><h3>' + esc(rec[1]) + '</h3>' +
+    '<p class="muted small" style="margin:0">Found on Open Food Facts (' + esc(rec[2]) + '), a free, crowd-sourced product database.</p>' +
+    '<div class="sv-warn"><strong>This comes from other people’s scans, not the manufacturer.</strong> Check it against your package the first time.</div>' +
+    '<p style="margin:8px 0 0"><strong>' + esc(rec[19] || '1 serving') + ' (' + fmtG(rec[3]) + ' g)</strong>: ' + n0(srv(5)) + ' kcal, ' + n0(srv(6)) + ' g protein, ' + n0(srv(7)) + ' g carbs, ' + n0(srv(8)) + ' g fat; ' + esc(extra) + '.</p>' +
+    '<div class="ai-actions"><button class="btn primary big" data-action="scan-off-use">Use this product</button><button class="btn" data-action="scan-off-skip">This is not my package</button></div>' +
+    '<p style="margin:6px 0 0"><button class="link" data-action="report" data-kind="brand">Report a wrong number</button></p>' +
+    '<p class="muted small" style="margin:8px 0 0">Source: Open Food Facts (openfoodfacts.org) — a free, crowd-sourced public database, not the USDA list and not checked by me or by Anthropic.</p></article>';
+}
+async function checkOffInBackground(code) {
+  // Fire-and-forget: used only for a live-camera miss, so scanning keeps going at its normal pace instead of
+  // freezing on a network call. If this turns up something after the moment has already passed, it quietly
+  // links the barcode for next time and lets the person know -- it does not try to retroactively log anything,
+  // since whatever they were pointing the camera at a few seconds ago may not even be the item in frame now.
+  const rec = await lookupOpenFoodFacts(code);
+  OFF_CACHE[code] = rec;
+  if (!rec || foodForCode(code)) return;
+  const food = offFood(rec);
+  if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
+  state.barcodes[code] = food.id;
+  saveState();
+  toast('Found "' + food.name + '" on Open Food Facts — scan it again to log it.');
+  render();
+}
+function scanUseOff() {
+  const rec = OFF_CACHE[ui.scan.code];
+  if (!rec) return;
+  const food = offFood(rec);
+  if (!state.customFoods.some(f => f.id === food.id)) state.customFoods.push(food);
+  state.barcodes[ui.scan.code] = food.id;
+  saveState(); setDefaultAmount(food); render();
+  toast('Saved "' + food.name + '". Scanning it again will find it instantly.');
 }
 function brandCardHtml(rec) {
   const per = rec[3] / 100, srv = x => rec[x] == null ? null : rec[x] * per, old = brandMonthsOld(rec) > BRAND_STALE_MONTHS;
@@ -3486,6 +3674,8 @@ function viewScan() {
         '<div class="ai-actions"><button class="btn primary big" data-action="scan-add">Add to ' + esc(label) + '</button></div></article>';
     } else if (brandRecord(S.code) && S.brandSkip !== S.code) {
       result += brandCardHtml(brandRecord(S.code));
+    } else if (OFF_CACHE[S.code] && S.offSkip !== S.code) {
+      result += offCardHtml(OFF_CACHE[S.code]);
     } else {
       result += '<article class="ai-card"><h3>New product</h3><p class="muted" style="margin:0">This barcode is not linked to a food yet. Set it up once and every future scan is instant.</p>' +
         (S.form ? formHtml(S.form) :
@@ -3537,6 +3727,8 @@ function scanClick(a, el) {
   else if (a === 'scan-cancel') stopLive();
   else if (a === 'scan-brand-use') scanUseBrand();
   else if (a === 'scan-brand-skip') { ui.scan.brandSkip = ui.scan.code; render(); }
+  else if (a === 'scan-off-use') scanUseOff();
+  else if (a === 'scan-off-skip') { ui.scan.offSkip = ui.scan.code; render(); }
   else if (a === 'scan-lookup') {
     const v = ui.scan.typed.trim();
     if (!v) { toast('Type the number printed under the barcode.'); return; }
@@ -4936,7 +5128,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.03-4';
+const APP_VERSION = '2026.10.03-6';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
@@ -5000,7 +5192,7 @@ VIEWS.help = function () {
     '<li><strong>Last backup:</strong> ' + (state.lastBackup ? esc(String(state.lastBackup).slice(0, 10)) + ' (' + d + ' days ago)' : 'none yet') + '.</li></ul>' +
     '<h3>Keep your data safe</h3><ul class="sv-steps"><li>On an iPhone or iPad: in Safari, tap the Share button, then "Add to Home Screen", and open the app from there. Safari can erase the saved data of a website you have not opened for a week, and apps added to the home screen are counted separately. That is Apple\'s behavior as I understand it, so a backup is still your real protection.</li>' +
     '<li>Download a backup every week. The app reminds you when it has been a week.</li></ul>' +
-    '<h3>Privacy</h3><p class="muted small" style="margin:0">This site has no accounts and no analytics, and it loads nothing from other websites. What you log stays in this browser on this device and is sent nowhere unless you download a backup and share it. The website\'s host may keep ordinary visit logs (such as IP addresses) that this app can not see. To delete your data, clear this site\'s data in your browser settings.</p>';
+    '<h3>Privacy</h3><p class="muted small" style="margin:0">This site has no accounts and no analytics. What you log stays in this browser on this device and is sent nowhere unless you download a backup and share it. The one exception: scanning a barcode this device has not seen before and that is not in the built-in list sends just that barcode number (nothing about you or your food log) to Open Food Facts, a free public product database, so it can be recognised automatically instead of you typing it in by hand. The website\'s host may keep ordinary visit logs (such as IP addresses) that this app can not see. To delete your data, clear this site\'s data in your browser settings.</p>';
   const k = base.lastIndexOf('</div>');
   return base.slice(0, k) + extra + base.slice(k);
 };
