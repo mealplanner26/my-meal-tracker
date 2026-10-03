@@ -318,6 +318,7 @@ textarea { resize: vertical; display: block; }
 .scan-guide { position: absolute; left: 7%; right: 7%; top: 50%; height: 24vh; transform: translateY(-60%); border: 3px solid #fff; border-radius: 14px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.4); pointer-events: none; }
 .scan-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 16px 28px; display: flex; flex-direction: column; align-items: center; gap: 14px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.7)); }
 .scan-msg { margin: 0; color: #fff; text-align: center; font-weight: 500; }
+.scan-btnrow { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .scan-hint { margin: -6px 0 0; color: rgba(255, 255, 255, 0.8); font-size: 0.85rem; text-align: center; }
 .scan-diag { margin: -8px 0 0; color: rgba(255, 255, 255, 0.55); font-size: 0.7rem; text-align: center; min-height: 1em; }
 /* A big, hard-to-miss symbol over the live camera view right after a scan -- the text message alone was easy to miss
@@ -533,9 +534,9 @@ textarea { resize: vertical; display: block; }
   <div class="scan-guide"></div>
   <div id="scanFlash" class="scan-flash" aria-hidden="true"></div>
   <div class="scan-bottom"><p id="scanMsg" class="scan-msg" role="status">Point the camera at a barcode</p>
-    <p class="scan-hint">Not catching it? Back up a little so it's sharp, or tap the picture for a closer read.</p>
+    <p class="scan-hint">Needs to look sharp, with no shine across the bars \u2014 tilt the package if it glares. Tap the picture for a closer read.</p>
     <p id="scanDiag" class="scan-diag" aria-hidden="true"></p>
-    <button class="btn" data-action="scan-cancel">Cancel</button></div>
+    <div class="scan-btnrow"><button class="btn" id="scanLensBtn" data-action="scan-lens" hidden>Zoom in</button><button class="btn" data-action="scan-cancel">Cancel</button></div></div>
 </div>
 
 <script>
@@ -3063,11 +3064,16 @@ function decodeEan8(r, s) {
 }
 
 // Turn one row of pixels into alternating bar / space widths, starting at the first bar.
-function rowRuns(gray, w, y) {
+function rowRuns(gray, w, y, sharpen) {
   const off = y * w, s = new Float32Array(w);
-  for (let x = 0; x < w; x++) s[x] = (gray[off + Math.max(0, x - 1)] + 2 * gray[off + x] + gray[off + Math.min(w - 1, x + 1)]) / 4;
+  if (sharpen) {
+    // For a slightly out-of-focus picture: thin bars blur into their neighbours and lose contrast, so push each pixel
+    // away from the average of the 4 pixels either side of it (an "unsharp mask") before deciding bar or space.
+    const c = new Float32Array(w + 1); for (let x = 0; x < w; x++) c[x + 1] = c[x] + gray[off + x];
+    for (let x = 0; x < w; x++) { const lo = Math.max(0, x - 4), hi = Math.min(w, x + 5); s[x] = gray[off + x] + 2 * (gray[off + x] - (c[hi] - c[lo]) / (hi - lo)); }
+  } else for (let x = 0; x < w; x++) s[x] = (gray[off + Math.max(0, x - 1)] + 2 * gray[off + x] + gray[off + Math.min(w - 1, x + 1)]) / 4;
   const B = Math.max(8, Math.round(w / 16)), nb = Math.ceil(w / B);
-  const mn = new Float32Array(nb).fill(255), mx = new Float32Array(nb);
+  const mn = new Float32Array(nb).fill(1e9), mx = new Float32Array(nb).fill(-1e9);
   for (let x = 0; x < w; x++) { const b = (x / B) | 0; if (s[x] < mn[b]) mn[b] = s[x]; if (s[x] > mx[b]) mx[b] = s[x]; }
   const runs = []; let cur = false, len = 0;          // runs[0] is the blank margin before the first bar (possibly 0 wide)
   for (let x = 0; x < w; x++) {
@@ -3082,11 +3088,11 @@ function rowRuns(gray, w, y) {
 }
 
 // Look for a barcode along many horizontal lines; the most common valid answer wins.
-function decodeGray(gray, w, h, y0, y1, rows) {
+function decodeGray(gray, w, h, y0, y1, rows, sharpen) {
   const votes = {};
   for (let i = 0; i < rows; i++) {
     const y = Math.min(h - 1, Math.floor(h * (y0 + (y1 - y0) * (i + 0.5) / rows)));
-    const fwd = rowRuns(gray, w, y);
+    const fwd = rowRuns(gray, w, y, sharpen);
     if (fwd.length < 43) continue;
     for (let dir = 0; dir < 2; dir++) {                      // dir 1 = the barcode is upside down
       const runs = dir ? fwd.slice().reverse() : fwd;
@@ -3161,7 +3167,8 @@ function decodeDeep(src, W0, H0) {
     seen.add(w);
     const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
     const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(src, 0, 0, w, h);
-    const r = decodeGrayBoth(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.05, 0.95, width >= 2400 ? 150 : 60);
+    const g = toGray(cx.getImageData(0, 0, w, h).data, w * h);
+    const r = decodeGrayBoth(g, w, h, 0.05, 0.95, width >= 2400 ? 150 : 60) || decodeGray(g, w, h, 0.05, 0.95, 80, true);
     if (r) return r.code;
   }
   // A small picture (a live camera frame, not a full photo): blow it up 2x with smooth interpolation as a last try --
@@ -3239,9 +3246,14 @@ async function startLive() {
     }
   } catch (e) { if (!SCAN.stream || !SCAN.stream.active) { SCAN.stream = null; scanFail('The live camera did not start. Use "Take a photo" instead.'); return; } }
   const track = SCAN.stream.getVideoTracks()[0];
-  // Zoom in a little where the browser allows it, so a barcode held far enough away to be in focus still fills
-  // enough of the picture to read. (On the multi-lens camera, 2 is roughly the normal 1x view of the Camera app.)
-  try { const caps = track && track.getCapabilities ? track.getCapabilities() : {}; if (caps.zoom && caps.zoom.max >= 2) await track.applyConstraints({ advanced: [{ zoom: 2 }] }); } catch (e) { /* not supported here */ }
+  // Two lens choices where the browser lets us set the zoom. "Close-up" is the multi-lens camera's widest setting: on a
+  // Pro iPhone that is the lens that can focus a couple of inches away (the one the Camera app switches to for macro).
+  // "Zoom in" is twice that, the normal 1x view, which is sharp only from about 8 inches back. A screenshot from a
+  // Pro showed the 2x view held close enough to be completely out of focus, so close-up is the default on a Pro.
+  SCAN.zoomCaps = null;
+  try { const caps = track && track.getCapabilities ? track.getCapabilities() : {}; if (caps.zoom && caps.zoom.max >= 2 * (caps.zoom.min || 1)) SCAN.zoomCaps = caps.zoom; } catch (e) { /* not supported here */ }
+  SCAN.triple = !!(track && /triple/i.test(track.label || ''));
+  await applyLens(track);
   // Ask the camera to keep re-focusing on its own (macro-ish barcodes up close are exactly where a camera that
   // focused once far away and stopped would blur). Not every browser/device honors this -- Safari on iPhone may
   // ignore it entirely -- so every call here is wrapped and failures are silently skipped, never shown to the person.
@@ -3262,9 +3274,29 @@ async function startLive() {
   SCAN.reads = 0; clearInterval(SCAN.diagTimer);
   SCAN.diagTimer = setInterval(() => {
     const d = $('scanDiag'), vv = $('scanVideo'), t = SCAN.stream && SCAN.stream.getVideoTracks()[0];
-    if (d && vv) d.textContent = ((t && t.label) || 'camera') + ' · ' + vv.videoWidth + '×' + vv.videoHeight + ' · ' + SCAN.reads + ' reads/s';
+    let zm = 'zoom n/a'; try { const st = t && t.getSettings ? t.getSettings() : {}; if (st.zoom != null) zm = 'zoom ' + (Math.round(st.zoom * 10) / 10); } catch (e) { /* ignore */ }
+    if (d && vv) d.textContent = ((t && t.label) || 'camera') + ' · ' + vv.videoWidth + '×' + vv.videoHeight + ' · ' + zm + ' · ' + SCAN.reads + ' reads/s';
     SCAN.reads = 0;
   }, 1000);
+}
+function lensChoice() {
+  let v = null; try { v = localStorage.getItem('mp-scanLens'); } catch (e) { /* no storage: use the default */ }
+  return v === 'close' || v === 'far' ? v : (SCAN.triple ? 'close' : 'far');
+}
+async function applyLens(track) {
+  const btn = $('scanLensBtn');
+  if (!SCAN.zoomCaps || !track) { if (btn) btn.hidden = true; return; }
+  const z = SCAN.zoomCaps, lens = lensChoice(), min = z.min || 1;
+  const target = lens === 'close' ? min : Math.min(z.max, min * 2);
+  try { await track.applyConstraints({ advanced: [{ zoom: target }] }); } catch (e) { /* keep whatever it was */ }
+  if (btn) { btn.hidden = false; btn.textContent = lens === 'close' ? 'Zoom in (hold farther)' : 'Close-up (hold closer)'; }
+}
+async function toggleLens() {
+  const next = lensChoice() === 'close' ? 'far' : 'close';
+  try { localStorage.setItem('mp-scanLens', next); } catch (e) { /* only for this visit then */ }
+  const t = SCAN.stream && SCAN.stream.getVideoTracks()[0];
+  await applyLens(t);
+  const msg = $('scanMsg'); if (msg) msg.textContent = next === 'close' ? 'Close-up: hold the barcode about 3\u20135 inches away' : 'Zoomed in: hold the barcode about 8\u201312 inches away';
 }
 function stopLive() {
   clearInterval(SCAN.timer); SCAN.timer = null;
@@ -3322,6 +3354,7 @@ async function scanFrame() {
       // then the rest of the frame, then the frame turned sideways (a barcode held vertically).
       const gray = toGray(cx.getImageData(0, 0, w, h).data, w * h);
       let r = decodeGray(gray, w, h, 0.3, 0.7, 40) || decodeGray(gray, w, h, 0.1, 0.9, 30);
+      if (!r) r = decodeGray(gray, w, h, 0.3, 0.7, 40, true);
       if (!r) r = decodeGray(transposeGray(gray, w, h), h, w, 0.2, 0.8, 40);
       if (!r) r = decodeBandUpscaled(src, srcW, srcH);
       if (src !== v && src.close) try { src.close(); } catch (e) { /* ImageBitmap cleanup; fine either way */ }
@@ -3749,6 +3782,7 @@ async function scanReadDigitsWithClaude() {
 function scanClick(a, el) {
   if (a === 'scan-live') startLive();
   else if (a === 'scan-cancel') stopLive();
+  else if (a === 'scan-lens') toggleLens();
   else if (a === 'scan-brand-use') scanUseBrand();
   else if (a === 'scan-brand-skip') { ui.scan.brandSkip = ui.scan.code; render(); }
   else if (a === 'scan-off-use') scanUseOff();
@@ -5152,7 +5186,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.03-7';
+const APP_VERSION = '2026.10.03-8';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
