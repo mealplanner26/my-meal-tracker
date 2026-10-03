@@ -328,7 +328,30 @@ textarea { resize: vertical; display: block; }
 .scan-flash.ok { color: #3ecb6a; background: radial-gradient(circle, rgba(46, 158, 78, 0.3), transparent 65%); }
 .scan-flash.miss { color: #e06b6b; background: radial-gradient(circle, rgba(158, 46, 46, 0.25), transparent 65%); }
 .mark-flash { position: fixed; z-index: 70; font-size: 40vmin; flex-direction: column; }
-.mark-flash.ok, .mark-flash.miss { background: rgba(16, 20, 18, 0.5); }
+.mark-flash.ok, .mark-flash.miss { background: rgba(16, 20, 18, 0.55); }
+.mark-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 22px 20px; border-radius: 18px; max-width: 86vw; text-align: center; text-shadow: none; }
+.mark-flash.ok .mark-card { background: #1f8a46; color: #fff; }
+.mark-flash.miss .mark-card { background: #a63a3a; color: #fff; }
+.mark-card .mark-sym { font-size: 22vmin; line-height: 1; }
+.mark-card strong { font-size: 1.35rem; line-height: 1.25; }
+.mark-card span:not(.mark-sym) { font-size: 1.05rem; opacity: 0.95; }
+.scan-result { position: absolute; left: 12px; right: 12px; top: max(14px, env(safe-area-inset-top)); display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-radius: 16px; color: #fff; opacity: 0; transform: translateY(-8px); transition: opacity 0.15s, transform 0.15s; pointer-events: none; }
+.scan-result.show { opacity: 1; transform: none; }
+.scan-result.ok { background: #1f8a46; }
+.scan-result.miss { background: #a63a3a; }
+.scan-result .mark-sym { font-size: 2.6rem; line-height: 1; }
+.scan-result strong { display: block; font-size: 1.25rem; line-height: 1.2; }
+.scan-result span:not(.mark-sym) { display: block; font-size: 1rem; opacity: 0.95; margin-top: 2px; }
+.scan-session { width: 100%; max-width: 520px; background: rgba(0, 0, 0, 0.55); border-radius: 14px; padding: 8px 10px; color: #fff; }
+.scan-session[hidden] { display: none; }
+.ss-head { font-weight: 700; font-size: 0.95rem; margin-bottom: 6px; }
+.ss-chips { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; }
+.ss-chip { flex: 0 0 auto; }
+.ss-chip { display: inline-flex; align-items: center; gap: 4px; background: rgba(46, 158, 78, 0.35); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; padding: 3px 4px 3px 10px; font-size: 0.85rem; }
+.ss-x { background: rgba(255, 255, 255, 0.15); color: #fff; border: 0; border-radius: 999px; width: 26px; height: 26px; font-size: 0.8rem; cursor: pointer; }
+.scan-session-card { border-left: 4px solid #1f8a46; }
+.ss-list { list-style: none; padding: 0; margin: 8px 0 0; }
+.ss-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line, #e2ddd3); }
 .mark-flash small { font-size: 1.1rem; font-weight: 600; margin-top: 4px; color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); max-width: 80vw; text-align: center; }
 
 
@@ -528,13 +551,15 @@ textarea { resize: vertical; display: block; }
   </footer>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
-<div id="markFlash" class="scan-flash mark-flash" aria-hidden="true"></div>
+<div id="markFlash" class="scan-flash mark-flash" role="status" aria-live="assertive"></div>
+<label id="hapticTick" aria-hidden="true" style="position:fixed;left:-9999px;top:0;opacity:0"><input type="checkbox" switch tabindex="-1"></label>
 <div id="scanLive" class="scan-live" hidden aria-label="Barcode camera">
   <video id="scanVideo" playsinline muted></video>
   <div class="scan-guide"></div>
   <div id="scanFlash" class="scan-flash" aria-hidden="true"></div>
-  <div class="scan-bottom"><p id="scanMsg" class="scan-msg" role="status">Point the camera at a barcode</p>
-    <p class="scan-hint">Needs to look sharp, with no shine across the bars \u2014 tilt the package if it glares. Tap the picture for a closer read.</p>
+  <div id="scanResult" class="scan-result" role="status" aria-live="assertive"></div>
+  <div class="scan-bottom"><div id="scanSession" class="scan-session" hidden></div><p id="scanMsg" class="scan-msg" role="status">Point the camera at a barcode</p>
+    <p class="scan-hint">Needs to look sharp, with no shine across the bars &mdash; tilt the package if it glares. Tap the picture for a closer read.</p>
     <p id="scanDiag" class="scan-diag" aria-hidden="true"></p>
     <div class="scan-btnrow"><button class="btn" id="scanLensBtn" data-action="scan-lens" hidden>Zoom in</button><button class="btn" data-action="scan-cancel">Cancel</button></div></div>
 </div>
@@ -1023,32 +1048,108 @@ function pinnedStapleHtml() {
 // Off by default: some people want to check the amount before it is logged. When on, scanning a barcode the app already knows logs it immediately at its usual amount, no confirm tap.
 // live = true only when the live camera itself produced this code (not a typed number, a Bluetooth scanner typing into the
 // box, or a photo), so only that path reopens the camera for the next scan.
-// A big checkmark (or a question mark for "not recognized") over the whole page for a moment, for every way of
-// scanning that is not the live camera (which has its own, inside the camera view): a Bluetooth scanner, a typed
-// number, a photo, the Add button. A line of text near the bottom is easy to miss; this is not.
-function flashMark(ok, caption) {
+/* ---------- telling people, unmistakably, what a scan just did ----------
+   People could not tell whether a scan had been added, or what it was. So every result now gets: a sound (a bright
+   two-note chime for added, a low two-note tone for not recognized), a buzz where the phone allows it, a big result
+   that stays up for two seconds with the product name, amount, calories and meal, and a running list of everything
+   added this visit, each with its own Undo -- on the camera screen while scanning, and on the Scan page afterwards. */
+const SND = { ctx: null };
+const soundOn = () => { try { return localStorage.getItem('mp-scanSound') !== 'off'; } catch (e) { return true; } };
+function unlockAudio() {          // phones only allow sound after a tap or key press, so get it ready on the first one
+  try {
+    if (!SND.ctx) { const C = window.AudioContext || window.webkitAudioContext; if (C) SND.ctx = new C(); }
+    if (SND.ctx && SND.ctx.state === 'suspended') SND.ctx.resume();
+  } catch (e) { /* no sound here */ }
+}
+['click', 'keydown', 'touchstart'].forEach(t => document.addEventListener(t, unlockAudio, true));
+function beep(ok) {
+  if (!soundOn()) return;
+  try {
+    unlockAudio(); const c = SND.ctx; if (!c) return; const t = c.currentTime + 0.01;
+    const tones = ok ? [[880, 0, 0.09], [1320, 0.1, 0.14]] : [[330, 0, 0.16], [220, 0.18, 0.24]];
+    for (const [f, start, d] of tones) {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = ok ? 'sine' : 'triangle'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t + start); g.gain.exponentialRampToValueAtTime(0.3, t + start + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + start + d);
+      o.connect(g); g.connect(c.destination); o.start(t + start); o.stop(t + start + d + 0.03);
+    }
+  } catch (e) { /* no sound here */ }
+}
+function haptic(ok) {
+  try { if (navigator.vibrate) { navigator.vibrate(ok ? 70 : [90, 60, 90]); return; } } catch (e) { /* ignore */ }
+  // iPhone has no vibrate(); toggling a "switch" checkbox gives a small tap on recent iOS versions. Harmless elsewhere.
+  try { const l = $('hapticTick'); if (l) { l.click(); if (!ok) setTimeout(() => l.click(), 140); } } catch (e) { /* ignore */ }
+}
+const HOLD_MS = 2000;
+// The result, on the page (Bluetooth scanner, typed number, photo, Add button) -- the camera has its own, below.
+function flashMark(ok, title, detail) {
   const el = $('markFlash'); if (!el) return;
-  el.innerHTML = (ok ? '\u2713' : '?') + (caption ? '<small>' + esc(caption) + '</small>' : '');
+  el.innerHTML = '<div class="mark-card"><span class="mark-sym">' + (ok ? '✓' : '?') + '</span><strong>' + esc(title || (ok ? 'Added' : 'Not recognized')) + '</strong>' + (detail ? '<span>' + esc(detail) + '</span>' : '') + '</div>';
   el.className = 'scan-flash mark-flash show ' + (ok ? 'ok' : 'miss');
   clearTimeout(SCAN.markTimer);
-  SCAN.markTimer = setTimeout(() => { el.classList.remove('show'); }, 1100);
+  SCAN.markTimer = setTimeout(() => { el.classList.remove('show'); }, HOLD_MS);
+}
+// The result inside the camera view: a big banner across the picture, held for the same two seconds.
+function liveResult(ok, title, detail) {
+  const el = $('scanResult'); if (!el) return;
+  el.innerHTML = '<span class="mark-sym">' + (ok ? '✓' : '?') + '</span><div><strong>' + esc(title) + '</strong>' + (detail ? '<span>' + esc(detail) + '</span>' : '') + '</div>';
+  el.className = 'scan-result show ' + (ok ? 'ok' : 'miss');
+  const fl = $('scanFlash'); if (fl) { fl.textContent = ok ? '✓' : '?'; fl.className = 'scan-flash show ' + (ok ? 'ok' : 'miss'); }
+}
+function clearLiveResult() {
+  const el = $('scanResult'); if (el) el.className = 'scan-result';
+  const fl = $('scanFlash'); if (fl) { fl.classList.remove('show', 'ok', 'miss'); fl.textContent = ''; }
+}
+function announce(ok, title, detail, live) {
+  beep(ok); haptic(ok);
+  if (live) liveResult(ok, title, detail); else flashMark(ok, title, detail);
+}
+const addedDetail = r => r.label + ' · ' + r.kcal + ' kcal → ' + SLOT_LABEL(r.slot);
+// Everything added this visit (not saved; the plan itself is what is saved), each with its own Undo.
+function noteAdded(r) {
+  const e = Object.assign({ id: ++SCAN.sessionSeq, undone: false }, r);
+  SCAN.session.push(e); if (SCAN.session.length > 60) SCAN.session.shift();
+  renderLiveSession();
+  return e.id;
+}
+function undoAdded(id) {
+  const e = SCAN.session.find(x => x.id === Number(id));
+  if (!e || e.undone) return;
+  const list = state.plan[e.date] && state.plan[e.date][e.slot];
+  const i = list ? list.lastIndexOf(e.mealId) : -1;
+  if (i >= 0) list.splice(i, 1);
+  e.undone = true; saveState(); render(); renderLiveSession();
+  toast('Removed ' + e.food + '.');
+}
+const sessionLive = () => SCAN.session.filter(e => !e.undone);
+function sessionTotals() { const l = sessionLive(); return { n: l.length, kcal: l.reduce((a, e) => a + e.kcal, 0) }; }
+function renderLiveSession() {
+  const el = $('scanSession'); if (!el) return;
+  const l = sessionLive(), t = sessionTotals();
+  if (!l.length) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = '<div class="ss-head">' + t.n + ' added · ' + t.kcal + ' kcal</div><div class="ss-chips">' +
+    l.slice(-4).reverse().map(e => '<span class="ss-chip">' + esc(e.food.length > 22 ? e.food.slice(0, 21) + '…' : e.food) +
+      ' <button class="ss-x" data-action="scan-undo" data-id="' + e.id + '" aria-label="Undo ' + esc(e.food) + '">✕</button></span>').join('') + '</div>';
+}
+function sessionCardHtml() {
+  const l = sessionLive(); if (!l.length) return '';
+  const t = sessionTotals(), days = [...new Set(l.map(e => e.date))];
+  return '<article class="ai-card scan-session-card"><h3>✓ Added just now: ' + t.n + ' item' + (t.n === 1 ? '' : 's') + ', ' + t.kcal + ' kcal</h3><ul class="ss-list">' +
+    l.slice().reverse().map(e => '<li><span><strong>' + esc(e.food) + '</strong><br><span class="muted small">' + esc(e.label) + ' · ' + e.kcal + ' kcal · ' + esc(SLOT_LABEL(e.slot)) + '</span></span>' +
+      '<button class="link" data-action="scan-undo" data-id="' + e.id + '">Undo</button></li>').join('') + '</ul>' +
+    '<div class="ai-actions">' + days.slice(0, 1).map(d => '<button class="btn" data-action="open-day" data-date="' + esc(d) + '">See this day’s meals</button>').join('') +
+    '<button class="link" data-action="scan-session-clear">Clear this list</button></div></article>';
 }
 function scanAutoAdd(f, live) {
   const r = logFood(f, Number(ui.scan.qty) || 1, ui.scan.unit, ui.scan.slot);
   if (!r) return false;
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(ui.scan.slot) + (live ? '. Scanning the next one…' : '. Ready for the next one.') });
+  const id = noteAdded(r);
   render();
-  toast('Added to ' + SLOT_LABEL(ui.scan.slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
-  // The live camera view covers the rest of the screen, so the message above (and the toast) can go unseen while
-  // you're looking at the viewfinder. Show it right on the camera overlay itself too -- a big checkmark as well as
-  // the text, since a word is easy to miss but a checkmark flashing over the whole view is not -- and give it a
-  // moment before the next scan resets it. Without this, one-tap mode could look like it was doing nothing at all.
-  if (!live) flashMark(true, 'Added ' + r.name);
-  if (live) {
-    const el = $('scanMsg'); if (el) el.textContent = '✓ Added ' + r.name;
-    const fl = $('scanFlash'); if (fl) { fl.textContent = '✓'; fl.className = 'scan-flash show ok'; }
-    resumeLive(900);
-  }
+  if (!live) toast('Added ' + r.food + ' to ' + SLOT_LABEL(r.slot) + '.', () => undoAdded(id));   // the camera shows its own list, with Undo
+  announce(true, 'Added ' + r.food, addedDetail(r), live);
+  if (live) { const el = $('scanMsg'); if (el) el.textContent = '\u2713 Added \u2014 scanning the next one in a moment'; resumeLive(HOLD_MS); }
   return true;
 }
 // Bulk mode, barcode not recognized: do not stop to ask for label details (that would break the run of scans). Note it for
@@ -1057,12 +1158,8 @@ function scanAutoMiss(code, live) {
   trackUnmatched('Barcode ' + showCode(code), code);
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Not in the database yet — noted for later.' + (live ? ' Scanning the next one…' : ' Ready for the next one.') });
   render();
-  if (!live) flashMark(false, 'Not recognized \u2014 noted for later');
-  if (live) {
-    const el = $('scanMsg'); if (el) el.textContent = 'Not in the database — noted for later';
-    const fl = $('scanFlash'); if (fl) { fl.textContent = '?'; fl.className = 'scan-flash show miss'; }
-    resumeLive(900);
-  }
+  announce(false, 'Not recognized \u2014 nothing added', 'Barcode ' + showCode(code) + ' \u00b7 noted for later', live);
+  if (live) { const el = $('scanMsg'); if (el) el.textContent = 'Not in the database \u2014 noted for later'; resumeLive(HOLD_MS); }
 }
 
 /* ---------- add several barcodes at once, by pasting their numbers ---------- */
@@ -1111,13 +1208,13 @@ async function scanBulkSubmit() {
     }
     if (food) {
       const hasServing = !!(food.serving && food.serving.grams > 0);
-      if (logFood(food, hasServing ? 1 : 100, hasServing ? 1 : 0, ui.scan.slot)) added++;
+      const lr = logFood(food, hasServing ? 1 : 100, hasServing ? 1 : 0, ui.scan.slot); if (lr) { noteAdded(lr); added++; }
     } else { trackUnmatched('Barcode ' + showCode(code), code); misses.push(raw); }
   }
   ui.scanBulk.text = ''; ui.scanBulk.open = false; ui.scanBulk.busy = false;
   saveState();
   render();
-  if (added) flashMark(true, added + ' added');
+  if (added) announce(true, added + ' added', 'to ' + SLOT_LABEL(ui.scan.slot), false); else if (misses.length) announce(false, 'Nothing added', misses.length + ' not recognized', false);
   toast(added + ' added to ' + SLOT_LABEL(ui.scan.slot) + (misses.length ? ', ' + misses.length + ' not found (noted under Help).' : '.'));
 }
 
@@ -3117,7 +3214,7 @@ function decodeGrayBoth(gray, w, h, y0, y1, rows) {
 }
 
 
-const SCAN = { stream: null, timer: null, detector: undefined, busy: false, lastCode: null, hits: 0, lastFile: null, canImages: false, cv: null, ctl: null, liveErr: '' };
+const SCAN = { session: [], sessionSeq: 0, stream: null, timer: null, detector: undefined, busy: false, lastCode: null, hits: 0, lastFile: null, canImages: false, cv: null, ctl: null, liveErr: '' };
 const guessSlot = () => { const h = new Date().getHours(); return h < 11 ? 'breakfast' : h < 15 ? 'lunch' : h < 17 ? 'snacks' : 'dinner'; };
 ui.scan = { code: '', typed: '', msg: '', qty: 100, unit: 0, slot: guessSlot(), form: null, linkQuery: '', busy: false, photoFailed: false, brandSkip: '', offSkip: '' };
 ui.scanBulk = { open: false, text: '', busy: false };   // "Add several barcodes at once": paste a list of barcode numbers instead of scanning or typing one at a time. UI-only, not saved.
@@ -3271,6 +3368,7 @@ async function startLive() {
   SCAN.timer = setInterval(scanFrame, 100);
   // A small readout of what the camera is really delivering (which lens, what size, how many frames get read each
   // second), so a report of "it never catches anything" comes with facts instead of another round of guessing.
+  renderLiveSession(); clearLiveResult();
   SCAN.reads = 0; clearInterval(SCAN.diagTimer);
   SCAN.diagTimer = setInterval(() => {
     const d = $('scanDiag'), vv = $('scanVideo'), t = SCAN.stream && SCAN.stream.getVideoTracks()[0];
@@ -3318,7 +3416,7 @@ function resumeLive(delayMs) {
   const go = () => {
     SCAN.lastCode = null; SCAN.hits = 0;
     const msg = $('scanMsg'); if (msg) msg.textContent = 'Point the camera at a barcode';
-    const fl = $('scanFlash'); if (fl) { fl.classList.remove('show', 'ok', 'miss'); fl.textContent = ''; }
+    clearLiveResult();
     SCAN.timer = setInterval(scanFrame, 100);
   };
   if (delayMs) setTimeout(go, delayMs); else go();
@@ -3444,7 +3542,7 @@ async function handleCode(raw, fmt, live) {
       // Live camera scanning should never pause waiting on the network -- the usual immediate miss/hit feedback
       // below still happens right away, and a slower lookup is left to catch up quietly in the background
       // (see checkOffInBackground) instead of making every miss wait on it.
-      checkOffInBackground(code);
+      checkOffInBackground(code, ui.scan.slot);
     } else {
       // A typed/photo/pasted lookup is already a deliberate, one-at-a-time action with the person watching the
       // screen, so a short wait here is fine -- same as "Reading the photo..." already is. This is the one point
@@ -3488,7 +3586,7 @@ function logFood(f, qty, unitIdx, slot) {
   if (!state.plan[ui.date]) state.plan[ui.date] = {};
   (state.plan[ui.date][slot] = state.plan[ui.date][slot] || []).push(meal.id);
   saveState();
-  return { name, before };
+  return { name, before, mealId: meal.id, date: ui.date, slot, label, food: f.name, kcal: Math.round((f.kcal || 0) * grams / 100) };
 }
 // Logging what was scanned.
 // A name (from "Add several at once") or a barcode (from one-tap scanning) that matched nothing: noted for later, so it can be
@@ -3570,20 +3668,33 @@ function offCardHtml(rec) {
     '<p style="margin:6px 0 0"><button class="link" data-action="report" data-kind="brand">Report a wrong number</button></p>' +
     '<p class="muted small" style="margin:8px 0 0">Source: Open Food Facts (openfoodfacts.org) — a free, crowd-sourced public database, not the USDA list and not checked by me or by Anthropic.</p></article>';
 }
-async function checkOffInBackground(code) {
-  // Fire-and-forget: used only for a live-camera miss, so scanning keeps going at its normal pace instead of
-  // freezing on a network call. If this turns up something after the moment has already passed, it quietly
-  // links the barcode for next time and lets the person know -- it does not try to retroactively log anything,
-  // since whatever they were pointing the camera at a few seconds ago may not even be the item in frame now.
+async function checkOffInBackground(code, slot) {
+  // Fire-and-forget, used only for a live-camera miss, so scanning keeps going at its normal pace instead of freezing
+  // on a network call. The miss was already shown and noted under "Foods not found"; if the lookup then finds the
+  // product, undo that note, link the barcode for next time, and -- in one-tap mode -- log it after all, since the
+  // person scanned it to log it. (The first version only linked it and asked for a second scan, and left it sitting
+  // in the "not found" list even though it had been found.)
   const rec = await lookupOpenFoodFacts(code);
   OFF_CACHE[code] = rec;
   if (!rec || foodForCode(code)) return;
   const food = offFood(rec);
   if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
   state.barcodes[code] = food.id;
+  const list = state.unmatched || [], i = list.findIndex(u => u.barcode === code);
+  if (i >= 0) { if ((list[i].n || 1) > 1) list[i].n--; else list.splice(i, 1); }
+  let r = null;
+  if (state.autoScan) {
+    const hasServing = !!(food.serving && food.serving.grams > 0);
+    r = logFood(food, hasServing ? 1 : 100, hasServing ? 1 : 0, slot || ui.scan.slot);
+  }
+  const id = r ? noteAdded(r) : 0;
   saveState();
-  toast('Found "' + food.name + '" on Open Food Facts — scan it again to log it.');
   render();
+  if (r) {
+    announce(true, 'Found online \u2014 added ' + r.food, addedDetail(r), !!(SCAN.stream && !$('scanLive').hidden));
+    if (SCAN.stream && SCAN.timer) setTimeout(() => { if (SCAN.timer) clearLiveResult(); }, HOLD_MS);   // scanning carried on meanwhile; just clear the banner
+    toast('Added ' + r.food + ' (found on Open Food Facts).', () => undoAdded(id));
+  } else toast('Found online: ' + food.name + ' \u2014 scan it again to log it.');
 }
 function scanUseOff() {
   const rec = OFF_CACHE[ui.scan.code];
@@ -3637,9 +3748,10 @@ function scanAddToPlan() {
   const slot = ui.scan.slot, r = logFood(f, Number(ui.scan.qty), ui.scan.unit, slot);
   if (!r) return;
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(slot) + '. Scan the next one whenever you are ready.' });
+  const id = noteAdded(r);
   render();
-  flashMark(true, 'Added ' + r.name);
-  toast('Added to ' + SLOT_LABEL(slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
+  announce(true, 'Added ' + r.food, addedDetail(r), false);
+  toast('Added ' + r.food + ' to ' + SLOT_LABEL(slot) + '.', () => undoAdded(id));
 }
 
 // Teaching the app a new product from the numbers on its label.
@@ -3744,7 +3856,7 @@ function viewScan() {
     }
   }
   return '<div class="scan"><div class="datebar"><h2>Scan a barcode</h2><label for="datePick" style="margin:0">Adding to</label>' +
-    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Day to add scanned foods to"></div>' +
+    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Day to add scanned foods to"></div>' + sessionCardHtml() +
     (block && !block.retry
       ? '<div class="scan-actions"><label class="btn primary big" for="scanPhoto">Take a photo of the barcode</label><input type="file" id="scanPhoto" data-scan="photo" accept="image/*" capture="environment" class="sr-only">' +
         '<label class="btn big" for="scanPick">Choose a photo</label><input type="file" id="scanPick" data-scan="photo" accept="image/*" class="sr-only"></div>' +
@@ -3754,6 +3866,7 @@ function viewScan() {
         '<label class="btn big" for="scanPhoto">Take a photo</label><input type="file" id="scanPhoto" data-scan="photo" accept="image/*" capture="environment" class="sr-only">' +
         '<label class="btn big" for="scanPick">Choose a photo</label><input type="file" id="scanPick" data-scan="photo" accept="image/*" class="sr-only"></div>') +
     '<label class="keep" style="margin:10px 0 4px"><input type="checkbox" data-scan="autoAdd"' + (state.autoScan ? ' checked' : '') + '> Log a known barcode the instant it scans, at its usual amount</label>' +
+    '<label class="keep" style="margin:0 0 4px"><input type="checkbox" data-scan="sound"' + (soundOn() ? ' checked' : '') + '> Play a sound when something is added (follows the phone\u2019s silent switch)</label>' +
     '<label for="scanCode">Or type the number under the barcode</label>' +
     '<div class="scan-typerow"><input id="scanCode" data-scan="typed" inputmode="numeric" autocomplete="off" maxlength="16" placeholder="012345678905" value="' + esc(S.typed) + '"><button class="btn" data-action="scan-lookup">Look up</button></div>' +
     '<p class="muted small" style="margin:4px 0 0">A Bluetooth barcode scanner works here too: pair it, tap into this box, and scan — it types the number and looks it up for you, same as typing it in.</p>' +
@@ -3783,6 +3896,8 @@ function scanClick(a, el) {
   if (a === 'scan-live') startLive();
   else if (a === 'scan-cancel') stopLive();
   else if (a === 'scan-lens') toggleLens();
+  else if (a === 'scan-undo') undoAdded(el && el.dataset ? el.dataset.id : null);
+  else if (a === 'scan-session-clear') { SCAN.session = []; renderLiveSession(); render(); }
   else if (a === 'scan-brand-use') scanUseBrand();
   else if (a === 'scan-brand-skip') { ui.scan.brandSkip = ui.scan.code; render(); }
   else if (a === 'scan-off-use') scanUseOff();
@@ -3830,6 +3945,7 @@ function scanChange(t) {
   else if (k === 'f:basis' && ui.scan.form) { ui.scan.form.basis = t.value; render(); }
   else if (k.startsWith('f:') && ui.scan.form) ui.scan.form[k.slice(2)] = t.value;
   else if (k === 'autoAdd') { state.autoScan = !!t.checked; saveState(); }
+  else if (k === 'sound') { try { localStorage.setItem('mp-scanSound', t.checked ? 'on' : 'off'); } catch (e) { /* this visit only */ } if (t.checked) beep(true); }
 }
 
 /* ============================================================
@@ -5186,7 +5302,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.03-8';
+const APP_VERSION = '2026.10.03-10';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
