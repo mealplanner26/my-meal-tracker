@@ -326,6 +326,9 @@ textarea { resize: vertical; display: block; }
 .scan-flash.show { opacity: 1; }
 .scan-flash.ok { color: #3ecb6a; background: radial-gradient(circle, rgba(46, 158, 78, 0.3), transparent 65%); }
 .scan-flash.miss { color: #e06b6b; background: radial-gradient(circle, rgba(158, 46, 46, 0.25), transparent 65%); }
+.mark-flash { position: fixed; z-index: 70; font-size: 40vmin; flex-direction: column; }
+.mark-flash.ok, .mark-flash.miss { background: rgba(16, 20, 18, 0.5); }
+.mark-flash small { font-size: 1.1rem; font-weight: 600; margin-top: 4px; color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); max-width: 80vw; text-align: center; }
 
 
 /* ---------- shared "steps / source / warning" styles, used by Weight goal, Help, RDI and food warnings ---------- */
@@ -524,6 +527,7 @@ textarea { resize: vertical; display: block; }
   </footer>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
+<div id="markFlash" class="scan-flash mark-flash" aria-hidden="true"></div>
 <div id="scanLive" class="scan-live" hidden aria-label="Barcode camera">
   <video id="scanVideo" playsinline muted></video>
   <div class="scan-guide"></div>
@@ -1018,6 +1022,16 @@ function pinnedStapleHtml() {
 // Off by default: some people want to check the amount before it is logged. When on, scanning a barcode the app already knows logs it immediately at its usual amount, no confirm tap.
 // live = true only when the live camera itself produced this code (not a typed number, a Bluetooth scanner typing into the
 // box, or a photo), so only that path reopens the camera for the next scan.
+// A big checkmark (or a question mark for "not recognized") over the whole page for a moment, for every way of
+// scanning that is not the live camera (which has its own, inside the camera view): a Bluetooth scanner, a typed
+// number, a photo, the Add button. A line of text near the bottom is easy to miss; this is not.
+function flashMark(ok, caption) {
+  const el = $('markFlash'); if (!el) return;
+  el.innerHTML = (ok ? '\u2713' : '?') + (caption ? '<small>' + esc(caption) + '</small>' : '');
+  el.className = 'scan-flash mark-flash show ' + (ok ? 'ok' : 'miss');
+  clearTimeout(SCAN.markTimer);
+  SCAN.markTimer = setTimeout(() => { el.classList.remove('show'); }, 1100);
+}
 function scanAutoAdd(f, live) {
   const r = logFood(f, Number(ui.scan.qty) || 1, ui.scan.unit, ui.scan.slot);
   if (!r) return false;
@@ -1028,6 +1042,7 @@ function scanAutoAdd(f, live) {
   // you're looking at the viewfinder. Show it right on the camera overlay itself too -- a big checkmark as well as
   // the text, since a word is easy to miss but a checkmark flashing over the whole view is not -- and give it a
   // moment before the next scan resets it. Without this, one-tap mode could look like it was doing nothing at all.
+  if (!live) flashMark(true, 'Added ' + r.name);
   if (live) {
     const el = $('scanMsg'); if (el) el.textContent = '✓ Added ' + r.name;
     const fl = $('scanFlash'); if (fl) { fl.textContent = '✓'; fl.className = 'scan-flash show ok'; }
@@ -1041,6 +1056,7 @@ function scanAutoMiss(code, live) {
   trackUnmatched('Barcode ' + showCode(code), code);
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Not in the database yet — noted for later.' + (live ? ' Scanning the next one…' : ' Ready for the next one.') });
   render();
+  if (!live) flashMark(false, 'Not recognized \u2014 noted for later');
   if (live) {
     const el = $('scanMsg'); if (el) el.textContent = 'Not in the database — noted for later';
     const fl = $('scanFlash'); if (fl) { fl.textContent = '?'; fl.className = 'scan-flash show miss'; }
@@ -1100,6 +1116,7 @@ async function scanBulkSubmit() {
   ui.scanBulk.text = ''; ui.scanBulk.open = false; ui.scanBulk.busy = false;
   saveState();
   render();
+  if (added) flashMark(true, added + ' added');
   toast(added + ' added to ' + SLOT_LABEL(ui.scan.slot) + (misses.length ? ', ' + misses.length + ' not found (noted under Help).' : '.'));
 }
 
@@ -2683,6 +2700,7 @@ function render() {
   app.innerHTML = views[ui.tab]();
   if (ui.tab === 'meals') refreshPickOptions();
   if (ui.tab === 'scan') refreshLinkOptions();
+  try { if (ui.tab === 'scan' && SCAN.keepTyping) { const b = $('scanCode'); if (b && b.focus) b.focus(); } } catch (e) { /* SCAN not set up yet during start-up */ }
   if (ui.refocus) {                                   // keep the keyboard place after a re-draw (for example when folding a day)
     const sel = ui.refocus; ui.refocus = null;
     try { const e = document.querySelector(sel); if (e && e.focus) e.focus(); } catch (err) { /* harmless */ }
@@ -3358,7 +3376,12 @@ async function liveDeepRead() {
 { const sl = $('scanLive'); if (sl && sl.addEventListener) sl.addEventListener('click', e => { if (!(e.target && e.target.closest && e.target.closest('button'))) liveDeepRead(); }); }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && SCAN.stream) stopLive();
-  if (e.key === 'Enter' && e.target && e.target.id === 'scanCode') scanClick('scan-lookup', { dataset: {} });
+  if (e.key === 'Enter' && e.target && e.target.id === 'scanCode') {
+    // A Bluetooth scanner types the number and presses Enter. Every redraw replaces the number box, which used to drop
+    // the cursor, so the NEXT scan's digits went nowhere. Keep the cursor in the box for the whole lookup.
+    SCAN.keepTyping = true;
+    Promise.resolve(scanClick('scan-lookup', { dataset: {} })).finally(() => { SCAN.keepTyping = false; const b = $('scanCode'); if (ui.tab === 'scan' && b && b.focus) b.focus(); });
+  }
   if (e.key === 'Enter' && e.target && e.target.id === 'qlText') qlClick('ql-log');
   if (e.key === 'Enter' && e.target && e.target.id === 'faQuery' && ui.fa.q.trim()) { const r = searchFoods(ui.fa.q, 1); if (r.list[0]) faClick('fa-pick', { dataset: { id: r.list[0].id } }); }
 });
@@ -3582,6 +3605,7 @@ function scanAddToPlan() {
   if (!r) return;
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(slot) + '. Scan the next one whenever you are ready.' });
   render();
+  flashMark(true, 'Added ' + r.name);
   toast('Added to ' + SLOT_LABEL(slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
 }
 
@@ -3732,7 +3756,7 @@ function scanClick(a, el) {
   else if (a === 'scan-lookup') {
     const v = ui.scan.typed.trim();
     if (!v) { toast('Type the number printed under the barcode.'); return; }
-    handleCode(v);
+    return handleCode(v);
   }
   else if (a === 'scan-again') { Object.assign(ui.scan, { code: '', typed: '', msg: '', form: null, photoFailed: false }); render(); }
   else if (a === 'scan-add') scanAddToPlan();
@@ -5128,7 +5152,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.03-6';
+const APP_VERSION = '2026.10.03-7';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
