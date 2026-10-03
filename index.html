@@ -3170,9 +3170,18 @@ async function startLive() {
     // widening how much of each frame gets checked, which pointed at the frame itself -- a live preview stream
     // asked for here at only 1280x720 is far less detailed than an actual photo from the same camera. Ask for a
     // much sharper stream; "ideal" lets the browser pick the closest it can actually do, never an error if it can't.
-    SCAN.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false });
+    SCAN.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, focusMode: { ideal: 'continuous' } }, audio: false });
     SCAN.liveErr = '';
   } catch (e) { SCAN.liveErr = (e && e.name) || 'Error'; const b = scanLiveBlock(); scanFail(b ? b.msg : 'The live camera did not start. Use "Take a photo" instead.'); return; }
+  const track = SCAN.stream.getVideoTracks()[0];
+  // Ask the camera to keep re-focusing on its own (macro-ish barcodes up close are exactly where a camera that
+  // focused once far away and stopped would blur). Not every browser/device honors this -- Safari on iPhone may
+  // ignore it entirely -- so every call here is wrapped and failures are silently skipped, never shown to the person.
+  try { if (track && track.getCapabilities && track.getCapabilities().focusMode) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) { /* not supported here */ }
+  // When the browser exposes it, ImageCapture reads from the camera's actual photo pipeline instead of the fast
+  // preview stream a <video> element shows -- closer to what "Take a photo" gets, and often back in focus right
+  // after the stream starts. SCAN.cap is left unset (not null) when unsupported, so scanFrame falls back cleanly.
+  try { if (window.ImageCapture && track) SCAN.cap = new ImageCapture(track); } catch (e) { SCAN.cap = null; }
   const v = $('scanVideo');
   v.srcObject = SCAN.stream;
   try { await v.play(); } catch (e) { /* autoplay is fine either way */ }
@@ -3185,6 +3194,7 @@ function stopLive() {
   clearInterval(SCAN.timer); SCAN.timer = null;
   if (SCAN.stream) SCAN.stream.getTracks().forEach(t => t.stop());
   SCAN.stream = null;
+  SCAN.cap = null;
   const v = $('scanVideo'); if (v) v.srcObject = null;
   const box = $('scanLive'); if (box) box.hidden = true;
 }
@@ -3219,9 +3229,18 @@ async function scanFrame() {
       // fixed downsample was throwing away exactly the detail a real photo of the same barcode would have kept,
       // which is very likely why live scanning kept failing even with more scan lines checked. Capped only so one
       // frame cannot run away with the CPU; SCAN.busy already skips a frame if the previous one is still working.
-      const w = Math.min(v.videoWidth, 1920), h = Math.round(w * v.videoHeight / v.videoWidth);
+      // When available, grab from the camera's photo pipeline (ImageCapture) instead of the live <video> preview --
+      // on many phones the preview stream is a smoothed-down, lower-detail feed even when the requested resolution
+      // is high, while a grabbed frame is much closer to what an actual photo captures. Falls back to drawing the
+      // video frame itself the moment this isn't supported or throws for any reason.
+      let src = v, srcW = v.videoWidth, srcH = v.videoHeight;
+      if (SCAN.cap) {
+        try { const bmp = await SCAN.cap.grabFrame(); src = bmp; srcW = bmp.width; srcH = bmp.height; } catch (e) { /* fall back to the video element below */ }
+      }
+      const w = Math.min(srcW, 1920), h = Math.round(w * srcH / srcW);
       const cv = SCAN.cv || (SCAN.cv = document.createElement('canvas')); cv.width = w; cv.height = h;
-      const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(v, 0, 0, w, h);
+      const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(src, 0, 0, w, h);
+      if (src !== v && src.close) try { src.close(); } catch (e) { /* ImageBitmap cleanup; fine either way */ }
       const r = decodeGrayBoth(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.1, 0.9, 50);
       code = r && r.code;
     }
@@ -4917,7 +4936,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.03-1';
+const APP_VERSION = '2026.10.03-4';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
@@ -4992,7 +5011,9 @@ supportInfo = function () {
     '\nAdded to the home screen: ' + ((window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone ? 'yes' : 'no') +
     '\nStorage protected from clean-up: ' + (SA.persisted === null ? 'not requested' : SA.persisted ? 'yes' : 'no') + '\nLast backup: ' + (state.lastBackup ? daysSince(state.lastBackup) + ' days ago' : 'none');
 };
-async function checkForUpdate() {
+let SA_HOLD_CHECKS_UNTIL = 0;                                             // see justUpdated below -- 0 means no hold is active
+async function checkForUpdate(manual) {
+  if (!manual && Date.now() < SA_HOLD_CHECKS_UNTIL) return;               // still inside the just-updated grace window; an explicit tap is exempt
   try {
     const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
     if (!res.ok) return;
@@ -5002,19 +5023,33 @@ async function checkForUpdate() {
 }
 async function updateNow() {                                              // forget the saved copy of the site (never your data), then load the new one
   try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(r => r.unregister())); const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); } catch (e) { /* still reload */ }
-  location.href = location.pathname + '?v=' + Date.now();                 // a plain reload can still be handed a cached copy by the browser or GitHub's own CDN; a new URL forces a real fetch
-}
+  location.href = location.pathname + '?updated=1&v=' + Date.now();      // a plain reload can still be handed a cached copy by the browser or GitHub's own CDN; a new URL forces a real fetch.
+}                                                                          // "updated=1" tells the next load it just came from this button (read just below).
 document.addEventListener('click', e => {
   const el = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
   if (!el) return;
   const a = el.dataset.action;
   if (a === 'sa-update') updateNow();
   else if (a === 'sa-snooze') { state.backupNudgeUntil = shiftKey(keyOf(new Date()), 3); saveState(); render(); }
-  else if (a === 'sa-check') { SA.checkMsg = 'Checking\u2026'; render(); checkForUpdate().then(() => { SA.checkMsg = SA.update ? 'A newer version is available.' : 'You have the latest version.'; render(); }); }
+  else if (a === 'sa-check') { SA.checkMsg = 'Checking\u2026'; render(); checkForUpdate(true).then(() => { SA.checkMsg = SA.update ? 'A newer version is available.' : 'You have the latest version.'; render(); }); }
 });
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
 loadProducts();
-setTimeout(checkForUpdate, 2500);
+// Right after "Update now" reloads the page, GitHub Pages itself can take a little while to finish actually
+// publishing a just-uploaded file -- the page you land on can be the new one while version.json briefly still
+// answers with the old number, or the other way around, for a short window. The first version of this grace
+// period only delayed the very next automatic check, but switching back to this tab (very easy to do by accident
+// right after a reload, especially on an iPhone) fires its own check through visibilitychange and was never held
+// back -- so the banner could still come right back, and tapping Update now again just restarted the same gap,
+// looping. Every automatic check (the first one, visibility changes, and the periodic one) is now held back for
+// the whole grace window, not just the first; only an explicit "Check for a newer version" tap in Help is exempt,
+// since that is the person deliberately asking right now.
+const justUpdated = /(?:^|[?&])updated=1(?:&|$)/.test(location.search);
+if (justUpdated) {
+  try { history.replaceState(null, '', location.pathname + location.hash); } catch (e) { /* cosmetic only */ }
+  SA_HOLD_CHECKS_UNTIL = Date.now() + 60000;
+}
+setTimeout(checkForUpdate, justUpdated ? 60000 : 2500);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
 setInterval(checkForUpdate, 30 * 60 * 1000);
 </script>
