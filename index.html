@@ -3166,7 +3166,11 @@ async function startLive() {
   const pre = scanLiveBlock();
   if (pre && !pre.retry) { scanFail(pre.msg); return; }                      // known not to work here: say so, do not even ask
   try {
-    SCAN.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    // "Take a photo" reads a full native-resolution photo and succeeds; the live camera kept failing even after
+    // widening how much of each frame gets checked, which pointed at the frame itself -- a live preview stream
+    // asked for here at only 1280x720 is far less detailed than an actual photo from the same camera. Ask for a
+    // much sharper stream; "ideal" lets the browser pick the closest it can actually do, never an error if it can't.
+    SCAN.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false });
     SCAN.liveErr = '';
   } catch (e) { SCAN.liveErr = (e && e.name) || 'Error'; const b = scanLiveBlock(); scanFail(b ? b.msg : 'The live camera did not start. Use "Take a photo" instead.'); return; }
   const v = $('scanVideo');
@@ -3210,16 +3214,15 @@ async function scanFrame() {
     const det = await ensureDetector();
     if (det) { try { code = detectorCode(await det.detect(v)); } catch (e) { /* use our own decoder */ } }
     if (!code) {
-      // Deliberately lighter than the photo decoder below (fewer rows, a smaller middle band, a lower-resolution
-      // downsample) to stay fast enough for a live 10-fps loop. On a phone with no built-in detector (iPhone),
-      // that can be too thin to ever catch a real barcode -- fine bars blur away at low resolution, and a code
-      // held even a little off-center falls outside the scanned band entirely. Closer to the photo decoder's own
-      // settings costs more per frame, but a frame that actually has a chance of succeeding beats a cheap one that
-      // never does; SCAN.busy already skips a frame if the previous one is still being worked on.
-      const w = 1080, h = Math.round(w * v.videoHeight / v.videoWidth);
+      // Read the frame at close to its own native resolution (startLive now asks the camera for a much sharper
+      // stream than before) instead of downsampling it to a fixed, smaller size regardless of what came in -- a
+      // fixed downsample was throwing away exactly the detail a real photo of the same barcode would have kept,
+      // which is very likely why live scanning kept failing even with more scan lines checked. Capped only so one
+      // frame cannot run away with the CPU; SCAN.busy already skips a frame if the previous one is still working.
+      const w = Math.min(v.videoWidth, 1920), h = Math.round(w * v.videoHeight / v.videoWidth);
       const cv = SCAN.cv || (SCAN.cv = document.createElement('canvas')); cv.width = w; cv.height = h;
       const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(v, 0, 0, w, h);
-      const r = decodeGrayBoth(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.1, 0.9, 40);
+      const r = decodeGrayBoth(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.1, 0.9, 50);
       code = r && r.code;
     }
     if (code) {
@@ -4914,7 +4917,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.02-8';
+const APP_VERSION = '2026.10.03-1';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
