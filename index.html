@@ -318,6 +318,12 @@ textarea { resize: vertical; display: block; }
 .scan-guide { position: absolute; left: 7%; right: 7%; top: 50%; height: 24vh; transform: translateY(-60%); border: 3px solid #fff; border-radius: 14px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.4); pointer-events: none; }
 .scan-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 16px 28px; display: flex; flex-direction: column; align-items: center; gap: 14px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.7)); }
 .scan-msg { margin: 0; color: #fff; text-align: center; font-weight: 500; }
+/* A big, hard-to-miss symbol over the live camera view right after a scan -- the text message alone was easy to miss
+   while looking at the viewfinder instead of reading it. Plain text glyph (no image), so it works offline too. */
+.scan-flash { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; opacity: 0; transition: opacity 0.15s ease-out; font-size: 30vmin; line-height: 1; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6); }
+.scan-flash.show { opacity: 1; }
+.scan-flash.ok { color: #3ecb6a; background: radial-gradient(circle, rgba(46, 158, 78, 0.3), transparent 65%); }
+.scan-flash.miss { color: #e06b6b; background: radial-gradient(circle, rgba(158, 46, 46, 0.25), transparent 65%); }
 
 
 /* ---------- shared "steps / source / warning" styles, used by Weight goal, Help, RDI and food warnings ---------- */
@@ -519,6 +525,7 @@ textarea { resize: vertical; display: block; }
 <div id="scanLive" class="scan-live" hidden aria-label="Barcode camera">
   <video id="scanVideo" playsinline muted></video>
   <div class="scan-guide"></div>
+  <div id="scanFlash" class="scan-flash" aria-hidden="true"></div>
   <div class="scan-bottom"><p id="scanMsg" class="scan-msg" role="status">Point the camera at a barcode</p>
     <button class="btn" data-action="scan-cancel">Cancel</button></div>
 </div>
@@ -1014,9 +1021,14 @@ function scanAutoAdd(f, live) {
   render();
   toast('Added to ' + SLOT_LABEL(ui.scan.slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
   // The live camera view covers the rest of the screen, so the message above (and the toast) can go unseen while
-  // you're looking at the viewfinder. Show it right on the camera overlay itself too, and give it a moment before
-  // the next scan resets it -- without this, one-tap mode could look like it was doing nothing at all.
-  if (live) { const el = $('scanMsg'); if (el) el.textContent = '✓ Added ' + r.name; resumeLive(900); }
+  // you're looking at the viewfinder. Show it right on the camera overlay itself too -- a big checkmark as well as
+  // the text, since a word is easy to miss but a checkmark flashing over the whole view is not -- and give it a
+  // moment before the next scan resets it. Without this, one-tap mode could look like it was doing nothing at all.
+  if (live) {
+    const el = $('scanMsg'); if (el) el.textContent = '✓ Added ' + r.name;
+    const fl = $('scanFlash'); if (fl) { fl.textContent = '✓'; fl.className = 'scan-flash show ok'; }
+    resumeLive(900);
+  }
   return true;
 }
 // Bulk mode, barcode not recognized: do not stop to ask for label details (that would break the run of scans). Note it for
@@ -1025,7 +1037,11 @@ function scanAutoMiss(code, live) {
   trackUnmatched('Barcode ' + showCode(code), code);
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Not in the database yet — noted for later.' + (live ? ' Scanning the next one…' : ' Ready for the next one.') });
   render();
-  if (live) { const el = $('scanMsg'); if (el) el.textContent = 'Not in the database — noted for later'; resumeLive(900); }
+  if (live) {
+    const el = $('scanMsg'); if (el) el.textContent = 'Not in the database — noted for later';
+    const fl = $('scanFlash'); if (fl) { fl.textContent = '?'; fl.className = 'scan-flash show miss'; }
+    resumeLive(900);
+  }
 }
 
 /* ---------- add several barcodes at once, by pasting their numbers ---------- */
@@ -3179,6 +3195,7 @@ function resumeLive(delayMs) {
   const go = () => {
     SCAN.lastCode = null; SCAN.hits = 0;
     const msg = $('scanMsg'); if (msg) msg.textContent = 'Point the camera at a barcode';
+    const fl = $('scanFlash'); if (fl) { fl.classList.remove('show', 'ok', 'miss'); fl.textContent = ''; }
     SCAN.timer = setInterval(scanFrame, 100);
   };
   if (delayMs) setTimeout(go, delayMs); else go();
@@ -4897,7 +4914,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.02-7';
+const APP_VERSION = '2026.10.02-8';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
