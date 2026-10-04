@@ -387,6 +387,7 @@ ul.my-scans li .btn { flex: 0 0 auto; }
 }
 .chip-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-style: solid; }
 .chip-pin { border-color: #C9A227; }
+.fa-forms { margin: 6px 0 8px; font-size: 0.92rem; }
 .quicklog { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
 .quicklog input { flex: 1 1 auto; min-width: 0; }
 .quicklog .btn { white-space: nowrap; }
@@ -1405,7 +1406,7 @@ function foodAddHtml() {
   const RM = F.replace && state.meals.find(m => m.id === F.replace.mealId);
   const banner = RM ? '<div class="fa-state-note" role="status">Replacing the food in <strong>' + esc(RM.name) + '</strong>' + (F.replace.idx < 0 ? ' (all ' + RM.items.length + ' of its foods become the one you choose)' : '') + '. This changes the meal everywhere it is used. <button class="link" data-action="fa-replace-cancel">Cancel</button></div>' : '';
   return '<div class="foodadd">' + banner + '<label for="faQuery" class="sr-only">Add a food</label>' +
-    pinnedStapleHtml() + recentFoodsHtml() +
+    // (the oval shortcut buttons for recent and pinned foods were removed on request; the search box finds the same foods)
     '<input id="faQuery" data-fa="q" type="search" autocomplete="off" maxlength="80" placeholder="Add a food: search ' + USDA_FOODS.length.toLocaleString() + ' foods (banana, rice\u2026)" value="' + esc(F.q) + '">' +
     (F.form ? faFormHtml() : F.pick ? faPickHtml() : '<div id="faResults">' + (F.q.trim() ? faResultsHtml() : '') + '</div>') + '</div>';
 }
@@ -1599,8 +1600,8 @@ function faStateHtml(f) {
     ? 'These numbers are for the food <strong>cooked</strong>. Package labels usually give it <strong>raw or dry</strong>, so weigh it the same way the numbers were measured.'
     : 'These numbers are for the food <strong>' + st + '</strong>. Cooking changes the weight (meat loses water; rice and pasta take it up), so weigh it before cooking, or pick a cooked entry.';
   const others = faOtherForms(f);
-  return '<p class="fa-state-note">' + msg + '</p>' + (others.length ? '<div class="quick-chips" aria-label="Other forms of this food">' + others.map(g =>
-    '<button class="chip-btn" data-action="fa-pick" data-id="' + esc(g.id) + '">' + foodState(g) + ': ' + esc(g.name.length > 34 ? g.name.slice(0, 34) + '\u2026' : g.name) + '</button>').join('') + '</div>' : '');
+  return '<p class="fa-state-note">' + msg + '</p>' + (others.length ? '<p class="fa-forms" aria-label="Other forms of this food">Other forms: ' + others.map(g =>
+    '<button class="link" data-action="fa-pick" data-id="' + esc(g.id) + '">' + foodState(g) + ': ' + esc(g.name.length > 34 ? g.name.slice(0, 34) + '\u2026' : g.name) + '</button>').join(' \u00b7 ') + '</p>' : '');
 }
 
 /* ---------- entering a product from its label, with checks that catch the usual mistakes ---------- */
@@ -2537,7 +2538,7 @@ function viewPlan() {
       (ids.length && later.length ? '<button class="link" data-action="repeat-slot" data-slot="' + id + '" aria-label="Repeat ' + name + ' on the rest of the week">Repeat on rest of week</button>' : '') +
       '<button class="link" data-action="bulk-toggle" data-slot="' + id + '" aria-expanded="' + !!bulkState(id).open + '">' + (bulkState(id).open ? 'Hide quick add' : '+ Add several at once') + '</button>' +
       '<span class="muted kcal">' + (slotKcal ? n0(slotKcal) + ' kcal' : '') + '</span></div></div>' +
-      (rows ? '<ul class="entries">' + rows + '</ul>' : '<p class="empty">Nothing planned yet.</p>') + chipsHtml(id, name) +
+      (rows ? '<ul class="entries">' + rows + '</ul>' : '<p class="empty">Nothing planned yet.</p>') +   // the oval shortcut buttons were removed on request; "Add a meal…" below has the same meals, A to Z
       (state.meals.length
         ? '<select class="add-select" data-add-slot="' + id + '" aria-label="Add a meal to ' + name + '"><option value="">Add a meal…</option>' + options + '</select>'
         : '<p class="empty">Build a meal in the Meals tab first.</p>') +
@@ -5559,7 +5560,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.04-1';
+const APP_VERSION = '2026.10.04-2';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
