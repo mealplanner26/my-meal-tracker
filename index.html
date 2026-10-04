@@ -204,6 +204,16 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .keep { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; font-size: 0.95rem; }
 .keep input { width: auto; }
 .slot-tools { display: flex; align-items: baseline; gap: 12px; }
+/* Per-meal scan links: their own short line under the meal name, so they never get squeezed off the edge */
+.mlinks { display: flex; gap: 18px; margin: -2px 0 6px; font-size: 0.92rem; }
+.mlinks .link { white-space: nowrap; }
+.sc-ready { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 4px 10px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.sc-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+.sc-ready:focus-within .sc-dot { background: #1f8a46; }
+.sc-in { flex: 1; min-width: 0; border: 0; background: transparent; font: inherit; font-size: 16px; padding: 6px 0; color: var(--ink); }
+.sc-in:focus { outline: none; }
+.sc-in::placeholder { color: var(--ink); opacity: 0.85; }
+.sc-ready .link { flex: 0 0 auto; }
 .toast-undo {
   margin-left: 14px; background: none; color: inherit; border: 1px solid currentColor;
   border-radius: 6px; padding: 3px 12px; font: 600 0.9rem "Public Sans", system-ui, sans-serif; cursor: pointer;
@@ -2560,8 +2570,13 @@ function viewPlan() {
       '<div class="slot-head"><h3 id="slot-' + id + '">' + name + '</h3><div class="slot-tools">' +
       (clip ? '<button class="link" data-action="paste-meal" data-date="' + ui.date + '" data-slot="' + id + '" aria-label="Paste ' + esc(clip.name) + ' into ' + name + '">Paste</button>' : '') +
       (ids.length && later.length ? '<button class="link" data-action="repeat-slot" data-slot="' + id + '" aria-label="Repeat ' + name + ' on the rest of the week">Repeat on rest of week</button>' : '') +
-      '<button class="link" data-action="bulk-toggle" data-slot="' + id + '" aria-expanded="' + !!bulkState(id).open + '">' + (bulkState(id).open ? 'Hide quick add' : '+ Add several at once') + '</button>' +
       '<span class="muted kcal">' + (slotKcal ? n0(slotKcal) + ' kcal' : '') + '</span></div></div>' +
+      // "+ Add several at once" was replaced by these two on request: scan straight into this meal on this day.
+      '<div class="mlinks"><button class="link" data-action="slot-cam" data-slot="' + id + '" aria-label="Scan into ' + name + ' with the camera">\ud83d\udcf7 Camera</button>' +
+      '<button class="link" data-action="slot-kbd" data-slot="' + id + '" aria-label="Scan into ' + name + ' with a Bluetooth scanner">\u2328\ufe0e Scanner</button></div>' +
+      (kbdSlot() === id
+        ? '<div class="sc-ready"><i class="sc-dot" aria-hidden="true"></i><input id="slotKbd" class="sc-in" inputmode="none" autocomplete="off" enterkeyhint="done" placeholder="Ready: scans go to ' + name + '" aria-label="Scanner ready: scans go into ' + name + '"><button class="link" data-action="slot-kbd-done">Done</button></div>'
+        : '') +
       (rows ? '<ul class="entries">' + rows + '</ul>' : '<p class="empty">Nothing planned yet.</p>') +   // the oval shortcut buttons were removed on request; "Add a meal…" below has the same meals, A to Z
       (state.meals.length
         ? '<select class="add-select" data-add-slot="' + id + '" aria-label="Add a meal to ' + name + '"><option value="">Add a meal…</option>' + options + '</select>'
@@ -2895,10 +2910,12 @@ function render() {
   if (aiTab) { const off = AI.status === 'unavailable'; aiTab.hidden = off; if (off && ui.tab === 'ai') ui.tab = 'plan'; }
   const uq = $('unmatchedQuick'), un = (state.unmatched || []).length;          // one-tap shortcut next to "Help and backup", so sending unmatched foods never needs a trip into Help first
   if (uq) { uq.hidden = !un; if (un) uq.textContent = 'Send ' + un + ' unmatched'; }
+  const hadKbd = !!(document.activeElement && document.activeElement.id === 'slotKbd');
   app.innerHTML = views[ui.tab]();
   if (ui.tab === 'meals') refreshPickOptions();
   if (ui.tab === 'scan') refreshLinkOptions();
   try { if (ui.tab === 'scan' && SCAN.keepTyping) { const b = $('scanCode'); if (b && b.focus) b.focus(); } } catch (e) { /* SCAN not set up yet during start-up */ }
+  try { if (ui.tab === 'plan' && (SCAN.keepTyping || hadKbd)) { const b = $('slotKbd'); if (b && b.focus) b.focus(); } } catch (e) { /* SCAN not set up yet during start-up */ }
   if (ui.refocus) {                                   // keep the keyboard place after a re-draw (for example when folding a day)
     const sel = ui.refocus; ui.refocus = null;
     try { const e = document.querySelector(sel); if (e && e.focus) e.focus(); } catch (err) { /* harmless */ }
@@ -3314,7 +3331,7 @@ function decodeGrayBoth(gray, w, h, y0, y1, rows) {
 }
 
 
-const SCAN = { session: [], sessionSeq: 0, stream: null, timer: null, detector: undefined, busy: false, lastCode: null, hits: 0, lastFile: null, canImages: false, cv: null, ctl: null, liveErr: '' };
+const SCAN = { slotMode: null, session: [], sessionSeq: 0, stream: null, timer: null, detector: undefined, busy: false, lastCode: null, hits: 0, lastFile: null, canImages: false, cv: null, ctl: null, liveErr: '' };
 const guessSlot = () => { const h = new Date().getHours(); return h < 11 ? 'breakfast' : h < 15 ? 'lunch' : h < 17 ? 'snacks' : 'dinner'; };
 ui.scan = { code: '', typed: '', msg: '', qty: 100, unit: 0, slot: guessSlot(), form: null, linkQuery: '', busy: false, photoFailed: false, brandSkip: '', offSkip: '' };
 ui.myScans = { open: false, q: '' };   // "My scanned foods": every product scanned on this device, A to Z, to log again without scanning. UI-only.
@@ -3407,6 +3424,14 @@ function scanLiveBlock() {
   return { msg: 'The live camera did not start. Use \u201cTake a photo\u201d above instead.', retry: true };
 }
 /* ---------- live camera ---------- */
+// The per-meal Camera / Scanner links on the Day tab always add each scan right away (with Undo), as asked for, even
+// when one-tap is switched off on the Scan tab. SCAN.slotMode is { slot, kind: 'cam' | 'kbd' } while one is running.
+function autoOn() {
+  const m = SCAN.slotMode;
+  return !!state.autoScan || !!(m && (m.kind === 'cam' ? SCAN.stream : ui.tab === 'plan'));
+}
+function kbdSlot() { try { return SCAN.slotMode && SCAN.slotMode.kind === 'kbd' ? SCAN.slotMode.slot : ''; } catch (e) { return ''; } }   // safe during start-up
+const liveIdleMsg = () => SCAN.slotMode && SCAN.slotMode.kind === 'cam' ? 'Adding to ' + SLOT_LABEL(SCAN.slotMode.slot) + ' \u2014 point at a barcode' : 'Point the camera at a barcode';
 function scanFail(msg) { ui.scan.msg = msg; render(); }
 async function startLive() {
   if (SCAN.stream) return;
@@ -3464,7 +3489,7 @@ async function startLive() {
   v.srcObject = SCAN.stream;
   try { await v.play(); } catch (e) { /* autoplay is fine either way */ }
   $('scanLive').hidden = false;
-  $('scanMsg').textContent = 'Point the camera at a barcode';
+  $('scanMsg').textContent = liveIdleMsg();
   SCAN.lastCode = null; SCAN.hits = 0; ui.scan.msg = '';
   SCAN.timer = setInterval(scanFrame, 100);
   // A small readout of what the camera is really delivering (which lens, what size, how many frames get read each
@@ -3505,6 +3530,7 @@ function stopLive() {
   SCAN.cap = null;
   const v = $('scanVideo'); if (v) v.srcObject = null;
   const box = $('scanLive'); if (box) box.hidden = true;
+  if (SCAN.slotMode && SCAN.slotMode.kind === 'cam') { SCAN.slotMode = null; if (ui.tab === 'plan') render(); }
 }
 // Bulk mode between one barcode and the next: pause watching frames, but never tear down the camera itself. Releasing and
 // re-requesting the stream (the old approach) made the camera visibly restart -- a flicker -- on every single scan.
@@ -3516,7 +3542,7 @@ function resumeLive(delayMs) {
   if (!SCAN.stream) { startLive(); return; }     // stream is gone for some reason: fall back to a full (re)start
   const go = () => {
     SCAN.lastCode = null; SCAN.hits = 0;
-    const msg = $('scanMsg'); if (msg) msg.textContent = 'Point the camera at a barcode';
+    const msg = $('scanMsg'); if (msg) msg.textContent = liveIdleMsg();
     clearLiveResult();
     SCAN.timer = setInterval(scanFrame, 100);
   };
@@ -3583,7 +3609,7 @@ function liveFound(code, force) {
   // view (and for 4 seconds after it was last seen); to log a second one, take it out of view and scan it again, or
   // tap the picture, which always counts.
   const now = Date.now(), last = SCAN.lastLive;
-  if (state.autoScan && !force && last && last.code === code && now - last.seen < 4000) {
+  if (autoOn() && !force && last && last.code === code && now - last.seen < 4000) {
     last.seen = now;
     const m = $('scanMsg'); if (m) m.textContent = 'Already added \u2014 point at the next item';
     return;
@@ -3592,7 +3618,7 @@ function liveFound(code, force) {
   // Used to wait for the same code twice in a row before accepting it. That extra confirmation frame is pure added
   // wait on a phone with no built-in detector, and the check digit (verified in handleCode) already rejects a garbled
   // read far more reliably than "did the decoder repeat itself" does.
-  if (state.autoScan) pauseLive(); else stopLive();
+  if (autoOn()) pauseLive(); else stopLive();
   try { if (navigator.vibrate) navigator.vibrate(60); } catch (e) { /* ignore */ }
   handleCode(...asScanned(code), true);     // true: this code came from the live camera, so auto mode may resume it for the next one
 }
@@ -3625,6 +3651,7 @@ document.addEventListener('keydown', e => {
     SCAN.keepTyping = true;
     Promise.resolve(scanClick('scan-lookup', { dataset: {} })).finally(() => { SCAN.keepTyping = false; const b = $('scanCode'); if (ui.tab === 'scan' && b && b.focus) b.focus(); });
   }
+  if (e.key === 'Enter' && e.target && e.target.id === 'slotKbd') { e.preventDefault(); slotKbdEnter(e.target); }
   if (e.key === 'Enter' && e.target && e.target.id === 'qlText') qlClick('ql-log');
   if (e.key === 'Enter' && e.target && e.target.id === 'faQuery' && ui.fa.q.trim()) { const r = searchFoods(ui.fa.q, 1); if (r.list[0]) faClick('fa-pick', { dataset: { id: r.list[0].id } }); }
 });
@@ -3640,7 +3667,7 @@ async function handleCode(raw, fmt, live) {
   if (!code) { ui.scan.msg = 'That number is not a valid barcode. Check the digits and try again.'; render(); return false; }
   Object.assign(ui.scan, { code, typed: showCode(code), msg: '', form: null, linkQuery: '', photoFailed: false, brandSkip: '', offSkip: '' });
   let f = foodForCode(code);
-  if (!f && state.autoScan) {
+  if (!f && autoOn()) {
     // One-tap mode only ever checked barcodes already linked on this device, so the very first time it saw a
     // barcode that is genuinely in the built-in brand list, it said "not in the database yet" -- exactly like a
     // real miss -- instead of recognizing it. Check the brand list too, same as "add several at once" already
@@ -3660,16 +3687,17 @@ async function handleCode(raw, fmt, live) {
       // screen, so a short wait here is fine -- same as "Reading the photo..." already is. This is the one point
       // the app reaches out to another website; see offCardHtml and the README for what that trades away.
       ui.scan.msg = 'Checking the food databases\u2026'; render();
+      if (ui.tab !== 'scan') toast('Checking the food databases\u2026');
       const rec = await lookupOnline(code);
       if (!rec) reportMiss(code);
       if (ui.scan.code !== code) return true;      // the person moved on to a different barcode while this was in flight
       OFF_CACHE[code] = rec;
       ui.scan.msg = '';
-      if (!f && state.autoScan && rec) { f = offFood(rec); if (!state.customFoods.some(x => x.id === f.id)) state.customFoods.push(f); state.barcodes[code] = f.id; }
+      if (!f && autoOn() && rec) { f = offFood(rec); if (!state.customFoods.some(x => x.id === f.id)) state.customFoods.push(f); state.barcodes[code] = f.id; }
     }
   }
-  if (f) { setDefaultAmount(f); if (state.autoScan && scanAutoAdd(f, live)) return true; }
-  else if (state.autoScan) { scanAutoMiss(code, live); return true; }
+  if (f) { setDefaultAmount(f); if (autoOn() && scanAutoAdd(f, live)) return true; }
+  else if (autoOn()) { scanAutoMiss(code, live); return true; }
   render();
   return true;
 }
@@ -3872,7 +3900,7 @@ async function checkOffInBackground(code, slot) {
   const list = state.unmatched || [], i = list.findIndex(u => u.barcode === code);
   if (i >= 0) { if ((list[i].n || 1) > 1) list[i].n--; else list.splice(i, 1); }
   let r = null;
-  if (state.autoScan) {
+  if (state.autoScan || SCAN.slotMode) {
     const hasServing = !!(food.serving && food.serving.grams > 0);
     r = logFood(food, hasServing ? 1 : 100, hasServing ? 1 : 0, slot || ui.scan.slot);
   }
@@ -4208,6 +4236,41 @@ async function scanReadDigitsWithClaude() {
   ui.scan.busy = false; SCAN.ctl = null; render();
 }
 
+function keyRepeat(v) {
+  const code = normalizeCode(v), now = Date.now(), lk = SCAN.lastKey;
+  if (autoOn() && code && lk && lk.code === code && now - lk.t < 3000) {
+    lk.t = now;
+    flashMark(true, 'Already added', 'Same item scanned twice \u2014 counted once. Wait a moment to add another.', 'dup');
+    return true;
+  }
+  SCAN.lastKey = { code, t: now };
+  return false;
+}
+// The Day tab's per-meal links. Camera opens the live camera over the page; Scanner puts the cursor in a slim box
+// under that meal so a Bluetooth scanner (which types the number and presses Enter) adds item after item there.
+async function slotScanClick(a, el) {
+  const slot = el && el.dataset ? el.dataset.slot : '';
+  if (a === 'slot-kbd-done') { SCAN.slotMode = null; render(); return; }
+  if (!slot || !SLOT_IDS.includes(slot)) return;
+  ui.scan.slot = slot;
+  if (a === 'slot-kbd') {
+    SCAN.slotMode = { slot, kind: 'kbd' }; render();
+    const b = $('slotKbd'); if (b && b.focus) b.focus();      // still inside the tap, so the phone allows it
+  } else if (a === 'slot-cam') {
+    if (SCAN.stream) return;
+    SCAN.slotMode = { slot, kind: 'cam' }; ui.scan.msg = '';
+    await startLive();
+    if (!SCAN.stream) { SCAN.slotMode = null; toast(ui.scan.msg || 'The camera did not start. Use the Scan tab to take a photo instead.'); }
+  }
+}
+function slotKbdEnter(t) {
+  const v = (t.value || '').trim(); t.value = '';
+  if (!v || !SCAN.slotMode || SCAN.slotMode.kind !== 'kbd') return;
+  if (keyRepeat(v)) return;
+  ui.scan.slot = SCAN.slotMode.slot;
+  SCAN.keepTyping = true;
+  Promise.resolve(handleCode(v)).finally(() => { SCAN.keepTyping = false; const b = $('slotKbd'); if (b && b.focus && ui.tab === 'plan') b.focus(); });
+}
 function scanClick(a, el) {
   if (a === 'scan-live') startLive();
   else if (a === 'scan-cancel') stopLive();
@@ -4230,13 +4293,7 @@ function scanClick(a, el) {
     // each one logging the item again. In one-tap mode the same barcode within 3 seconds of the last one is now
     // treated as that same scan; every repeat restarts the 3 seconds, so a held trigger never sneaks one through.
     // To log a second one on purpose, just wait a moment and scan it again.
-    const code = normalizeCode(v), now = Date.now(), lk = SCAN.lastKey;
-    if (state.autoScan && code && lk && lk.code === code && now - lk.t < 3000) {
-      lk.t = now; ui.scan.typed = ''; render();
-      flashMark(true, 'Already added', 'Same item scanned twice \u2014 counted once. Wait a moment to add another.', 'dup');
-      return;
-    }
-    SCAN.lastKey = { code, t: now };
+    if (keyRepeat(v)) { ui.scan.typed = ''; render(); return; }
     return handleCode(v);
   }
   else if (a === 'scan-again') { Object.assign(ui.scan, { code: '', typed: '', msg: '', form: null, photoFailed: false }); render(); }
@@ -5381,6 +5438,7 @@ document.addEventListener('click', e => {
 
   else if (a.startsWith('ai-')) { aiClick(a, el); }
   else if (a.startsWith('scan-')) { scanClick(a, el); }
+  else if (a.startsWith('slot-')) { slotScanClick(a, el); }
   else if (a.startsWith('wl-')) { wlClick(a, el); }
   else if (a === 'rdi-open') { ui.tab = 'rdi'; render(); }
   else if (a === 'rdi-range') { ui.rdiRange = el.dataset.range === 'week' ? 'week' : 'day'; render(); }
@@ -5637,7 +5695,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.04-4';
+const APP_VERSION = '2026.10.04-5';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
