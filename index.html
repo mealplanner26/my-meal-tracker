@@ -332,6 +332,8 @@ textarea { resize: vertical; display: block; }
 .mark-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 22px 20px; border-radius: 18px; max-width: 86vw; text-align: center; text-shadow: none; }
 .mark-flash.ok .mark-card { background: #1f8a46; color: #fff; }
 .mark-flash.miss .mark-card { background: #a63a3a; color: #fff; }
+.mark-flash.dup { color: #fff; background: rgba(16, 20, 18, 0.55); }
+.mark-flash.dup .mark-card { background: #9a6a12; color: #fff; }
 .mark-card .mark-sym { font-size: 22vmin; line-height: 1; }
 .mark-card strong { font-size: 1.35rem; line-height: 1.25; }
 .mark-card span:not(.mark-sym) { font-size: 1.05rem; opacity: 0.95; }
@@ -350,6 +352,16 @@ textarea { resize: vertical; display: block; }
 .ss-chip { display: inline-flex; align-items: center; gap: 4px; background: rgba(46, 158, 78, 0.35); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; padding: 3px 4px 3px 10px; font-size: 0.85rem; }
 .ss-x { background: rgba(255, 255, 255, 0.15); color: #fff; border: 0; border-radius: 999px; width: 26px; height: 26px; font-size: 0.8rem; cursor: pointer; }
 .scan-session-card { border-left: 4px solid #1f8a46; }
+.my-scans-box { margin: 12px 0; }
+.btn.my-scans-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; text-align: left; gap: 10px; }
+.nr-count { background: #a63a3a !important; }
+.my-count { background: var(--accent, #8f2a4b); color: #fff; border-radius: 999px; padding: 1px 10px; font-size: 0.9rem; }
+.my-scans-body { border: 1px solid var(--line, #e2ddd3); border-top: 0; border-radius: 0 0 12px 12px; padding: 10px 12px 12px; }
+.my-scans-body h4.az { margin: 12px 0 2px; font-size: 0.95rem; color: var(--accent, #8f2a4b); border-bottom: 1px solid var(--line, #e2ddd3); }
+ul.my-scans { list-style: none; margin: 0; padding: 0; }
+ul.my-scans li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line, #eee9df); }
+ul.my-scans li:last-child { border-bottom: 0; }
+ul.my-scans li .btn { flex: 0 0 auto; }
 .ss-list { list-style: none; padding: 0; margin: 8px 0 0; }
 .ss-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line, #e2ddd3); }
 .mark-flash small { font-size: 1.1rem; font-weight: 600; margin-top: 4px; color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); max-width: 80vw; text-align: center; }
@@ -1082,10 +1094,11 @@ function haptic(ok) {
 }
 const HOLD_MS = 2000;
 // The result, on the page (Bluetooth scanner, typed number, photo, Add button) -- the camera has its own, below.
-function flashMark(ok, title, detail) {
+function flashMark(ok, title, detail, kind) {
   const el = $('markFlash'); if (!el) return;
-  el.innerHTML = '<div class="mark-card"><span class="mark-sym">' + (ok ? '✓' : '?') + '</span><strong>' + esc(title || (ok ? 'Added' : 'Not recognized')) + '</strong>' + (detail ? '<span>' + esc(detail) + '</span>' : '') + '</div>';
-  el.className = 'scan-flash mark-flash show ' + (ok ? 'ok' : 'miss');
+  kind = kind || (ok ? 'ok' : 'miss');
+  el.innerHTML = '<div class="mark-card"><span class="mark-sym">' + (kind === 'dup' ? '\u21bb' : ok ? '✓' : '?') + '</span><strong>' + esc(title || (ok ? 'Added' : 'Not recognized')) + '</strong>' + (detail ? '<span>' + esc(detail) + '</span>' : '') + '</div>';
+  el.className = 'scan-flash mark-flash show ' + kind;
   clearTimeout(SCAN.markTimer);
   SCAN.markTimer = setTimeout(() => { el.classList.remove('show'); }, HOLD_MS);
 }
@@ -1158,7 +1171,7 @@ function scanAutoMiss(code, live) {
   trackUnmatched('Barcode ' + showCode(code), code);
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Not in the database yet — noted for later.' + (live ? ' Scanning the next one…' : ' Ready for the next one.') });
   render();
-  announce(false, 'Not recognized \u2014 nothing added', 'Barcode ' + showCode(code) + ' \u00b7 noted for later', live);
+  announce(false, 'Not recognized \u2014 nothing added', 'Barcode ' + showCode(code) + ' \u00b7 fix it under \u201cNot recognized\u201d on the Scan tab', live);
   if (live) { const el = $('scanMsg'); if (el) el.textContent = 'Not in the database \u2014 noted for later'; resumeLive(HOLD_MS); }
 }
 
@@ -1199,7 +1212,7 @@ async function scanBulkSubmit() {
       }
     }
     if (!food && !brandRecord(code)) {
-      if (!(code in OFF_CACHE)) OFF_CACHE[code] = await lookupOpenFoodFacts(code);
+      if (!(code in OFF_CACHE)) { OFF_CACHE[code] = await lookupOnline(code); if (!OFF_CACHE[code]) reportMiss(code); }
       if (OFF_CACHE[code]) {
         food = offFood(OFF_CACHE[code]);
         if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
@@ -3217,6 +3230,7 @@ function decodeGrayBoth(gray, w, h, y0, y1, rows) {
 const SCAN = { session: [], sessionSeq: 0, stream: null, timer: null, detector: undefined, busy: false, lastCode: null, hits: 0, lastFile: null, canImages: false, cv: null, ctl: null, liveErr: '' };
 const guessSlot = () => { const h = new Date().getHours(); return h < 11 ? 'breakfast' : h < 15 ? 'lunch' : h < 17 ? 'snacks' : 'dinner'; };
 ui.scan = { code: '', typed: '', msg: '', qty: 100, unit: 0, slot: guessSlot(), form: null, linkQuery: '', busy: false, photoFailed: false, brandSkip: '', offSkip: '' };
+ui.myScans = { open: false, q: '' };   // "My scanned foods": every product scanned on this device, A to Z, to log again without scanning. UI-only.
 ui.scanBulk = { open: false, text: '', busy: false };   // "Add several barcodes at once": paste a list of barcode numbers instead of scanning or typing one at a time. UI-only, not saved.
 const showCode = c => c.length === 13 && c[0] === '0' ? c.slice(1) : c;   // UPC-A is shown as 12 digits, the way it is printed
 const foodForCode = code => { const id = (state.barcodes || {})[code]; return id ? foodMap()[id] || null : null; };
@@ -3368,7 +3382,7 @@ async function startLive() {
   SCAN.timer = setInterval(scanFrame, 100);
   // A small readout of what the camera is really delivering (which lens, what size, how many frames get read each
   // second), so a report of "it never catches anything" comes with facts instead of another round of guessing.
-  renderLiveSession(); clearLiveResult();
+  renderLiveSession(); clearLiveResult(); SCAN.lastLive = null;
   SCAN.reads = 0; clearInterval(SCAN.diagTimer);
   SCAN.diagTimer = setInterval(() => {
     const d = $('scanDiag'), vv = $('scanVideo'), t = SCAN.stream && SCAN.stream.getVideoTracks()[0];
@@ -3476,7 +3490,18 @@ function decodeBandUpscaled(src, srcW, srcH) {
   return decodeGray(toGray(cx.getImageData(0, 0, w, h).data, w * h), w, h, 0.05, 0.95, 30);
 }
 // A code came from the live camera (the continuous reader, or a tap for a harder read of one frame).
-function liveFound(code) {
+function liveFound(code, force) {
+  // One-tap mode: a barcode left in view used to be added again every time scanning resumed (every couple of
+  // seconds), quietly logging the same item twice or three times. The same barcode is now ignored while it stays in
+  // view (and for 4 seconds after it was last seen); to log a second one, take it out of view and scan it again, or
+  // tap the picture, which always counts.
+  const now = Date.now(), last = SCAN.lastLive;
+  if (state.autoScan && !force && last && last.code === code && now - last.seen < 4000) {
+    last.seen = now;
+    const m = $('scanMsg'); if (m) m.textContent = 'Already added \u2014 point at the next item';
+    return;
+  }
+  SCAN.lastLive = { code, seen: now };
   // Used to wait for the same code twice in a row before accepting it. That extra confirmation frame is pure added
   // wait on a phone with no built-in detector, and the check digit (verified in handleCode) already rejects a garbled
   // read far more reliably than "did the decoder repeat itself" does.
@@ -3500,7 +3525,7 @@ async function liveDeepRead() {
     code = decodeDeep(cv, cv.width, cv.height);
   } catch (e) { code = null; }
   SCAN.deep = false;
-  if (code) { liveFound(code); return; }
+  if (code) { liveFound(code, true); return; }
   if (msg) msg.textContent = 'Could not read that frame — hold steady, about 6–10 inches away, and tap again';
   resumeLive(1600);
 }
@@ -3547,8 +3572,9 @@ async function handleCode(raw, fmt, live) {
       // A typed/photo/pasted lookup is already a deliberate, one-at-a-time action with the person watching the
       // screen, so a short wait here is fine -- same as "Reading the photo..." already is. This is the one point
       // the app reaches out to another website; see offCardHtml and the README for what that trades away.
-      ui.scan.msg = 'Checking a product database…'; render();
-      const rec = await lookupOpenFoodFacts(code);
+      ui.scan.msg = 'Checking the food databases\u2026'; render();
+      const rec = await lookupOnline(code);
+      if (!rec) reportMiss(code);
       if (ui.scan.code !== code) return true;      // the person moved on to a different barcode while this was in flight
       OFF_CACHE[code] = rec;
       ui.scan.msg = '';
@@ -3629,7 +3655,80 @@ function brandFood(rec) {
    your food log) to a free, public, crowd-sourced product database, and only when a scan is not already known on
    this device and not in the built-in USDA list. See the README and Help for the privacy trade-off this is. */
 const OFF_CACHE = {};        // code -> a BRAND_PACK-shaped record, or null once a lookup has come back with nothing usable
-function offFood(rec) { const food = brandFood(rec); food.id = 'custom-off-' + rec[0]; return food; }
+function offFood(rec) { const food = brandFood(rec); food.id = 'custom-' + (rec.src === 'usda' ? 'usda' : 'off') + '-' + rec[0]; return food; }
+const srcName = rec => rec && rec.src === 'usda' ? 'the USDA food database' : 'Open Food Facts';
+/* ---------- USDA FoodData Central, live: the full branded-foods database ----------
+   The built-in list is a 770-product slice of this; the live database has hundreds of thousands of US products, with
+   the numbers the manufacturer reported. Checked at the same time as Open Food Facts; when both know a product, the
+   USDA's manufacturer data wins. The key is a free api.data.gov key; it is not a secret (anyone can get one) and only
+   limits how many lookups an hour this site can make. Like Open Food Facts, it only ever receives the barcode. */
+const USDA_KEY = '9Do3ER9u2Ac41GWnF028lpW1ydH0sU3tQsleOcjG';
+const titleCase = t => String(t || '').toLowerCase().replace(/(^|[\s\-/(&])([a-z])/g, (m, a, b) => a + b.toUpperCase());
+async function lookupUsda(code) {
+  if (navigator.onLine === false || !USDA_KEY) return null;
+  try {
+    const want = brandKey(code);
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 6000);
+    let res;
+    try { res = await fetch('https://api.nal.usda.gov/fdc/v1/foods/search?api_key=' + encodeURIComponent(USDA_KEY) + '&dataType=Branded&pageSize=10&query=' + encodeURIComponent(want), { signal: ctl.signal }); }
+    finally { clearTimeout(timer); }
+    if (!res.ok) return null;
+    const j = await res.json();
+    const hits = ((j && j.foods) || []).filter(f => brandKey(f.gtinUpc) === want);
+    if (!hits.length) return null;
+    const date = f => String(f.publishedDate || f.modifiedDate || '');
+    const hit = hits.sort((a, b) => date(b).localeCompare(date(a)))[0];      // newest label first
+    const nut = hit.foodNutrients || [];
+    const nv = (...nums) => { for (const num of nums) { const x = nut.find(n => String(n.nutrientNumber) === num && n.value != null); if (x) return Number(x.value); } return null; };
+    let kcal = nv('208'); if (kcal == null) { const kj = nv('268'); if (kj != null) kcal = kj / 4.184; }
+    const prot = nv('203'), carb = nv('205'), fat = nv('204');
+    const name = titleCase(hit.description).trim();
+    if (!name || kcal == null || prot == null || carb == null || fat == null) return null;   // never show a half-blank card as if it were complete
+    const u = String(hit.servingSizeUnit || '').toLowerCase(), ml = /^(ml|mlt)$/.test(u), g = /^(g|grm)$/.test(u);
+    const size = Number(hit.servingSize);
+    const grams = (ml || g) && size > 0 ? size : 100;
+    const label = (ml || g) && size > 0 ? String(hit.householdServingFullText || (size + (ml ? ' mL' : ' g'))).slice(0, 30) : '100 g';
+    let vd = nv('328'); if (vd == null) { const iu = nv('324'); if (iu != null) vd = iu / 40; }
+    const brand = titleCase(hit.brandName || hit.brandOwner || 'USDA').trim();
+    const rec = [code, name.slice(0, 80), brand, grams, ml ? 'ml' : 'g', kcal, prot, carb, fat, nv('307'), nv('269', '2000'), nv('291'), nv('606'),
+      nv('601'), nv('306'), nv('301'), nv('303'), vd, date(hit).slice(0, 7) || new Date().toISOString().slice(0, 7), label, 0];
+    rec.src = 'usda';
+    return rec;
+  } catch (e) { return null; }                                        // offline, blocked, timed out, over the hourly limit -- same as "not found"
+}
+// Both databases at once. Either may fail on its own; the USDA's manufacturer numbers are preferred when both answer.
+async function lookupOnline(code) {
+  const [u, o] = await Promise.all([lookupUsda(code), lookupOpenFoodFacts(code)]);
+  if (o) o.src = 'off';
+  return u || o || null;
+}
+/* ---------- sending what nothing recognized to whoever runs this site ----------
+   Off until the site owner fills in REPORT (a Google Form's address and its four question IDs; see the README).
+   Sends only: the kind of report, the barcode, a product name if one is known, and the label numbers someone typed in
+   -- never anything about the person or their food log. Each barcode is reported once per phone. */
+const REPORT = { url: '', fields: { type: '', barcode: '', name: '', details: '' } };
+function sendReport(type, barcode, name, details) {
+  if (!REPORT.url || navigator.onLine === false) return false;
+  try {
+    const F = REPORT.fields, body = new URLSearchParams();
+    body.set(F.type, type); body.set(F.barcode, barcode || ''); body.set(F.name, name || ''); body.set(F.details, details || '');
+    fetch(REPORT.url, { method: 'POST', mode: 'no-cors', body }).catch(() => {});
+    return true;
+  } catch (e) { return false; }
+}
+function reportMiss(code) {
+  let sent = {};
+  try { sent = JSON.parse(localStorage.getItem('mp-reported') || '{}') || {}; } catch (e) { sent = {}; }
+  if (sent[code]) return;
+  if (sendReport('Not recognized', showCode(code), '', 'Scanned ' + new Date().toISOString().slice(0, 10) + (typeof APP_VERSION !== 'undefined' ? ' · app ' + APP_VERSION : ''))) {
+    sent[code] = Date.now();
+    try { localStorage.setItem('mp-reported', JSON.stringify(sent)); } catch (e) { /* may report again next time; harmless */ }
+  }
+}
+function clearUnmatched(code) {
+  const list = state.unmatched || [], i = list.findIndex(u => u.barcode === code);
+  if (i >= 0) list.splice(i, 1);
+}
 async function lookupOpenFoodFacts(code) {
   if (navigator.onLine === false) return null;                        // known offline: do not even try
   try {
@@ -3661,12 +3760,14 @@ function offCardHtml(rec) {
   const per = rec[3] / 100, srv = x => rec[x] == null ? null : rec[x] * per;
   const extra = [srv(9) != null ? n0(srv(9)) + ' mg sodium' : 'sodium not listed', srv(14) != null ? n0(srv(14)) + ' mg potassium' : 'potassium not listed'].join(', ');
   return '<article class="ai-card brand-card"><h3>' + esc(rec[1]) + '</h3>' +
-    '<p class="muted small" style="margin:0">Found on Open Food Facts (' + esc(rec[2]) + '), a free, crowd-sourced product database.</p>' +
-    '<div class="sv-warn"><strong>This comes from other people’s scans, not the manufacturer.</strong> Check it against your package the first time.</div>' +
-    '<p style="margin:8px 0 0"><strong>' + esc(rec[19] || '1 serving') + ' (' + fmtG(rec[3]) + ' g)</strong>: ' + n0(srv(5)) + ' kcal, ' + n0(srv(6)) + ' g protein, ' + n0(srv(7)) + ' g carbs, ' + n0(srv(8)) + ' g fat; ' + esc(extra) + '.</p>' +
+    (rec.src === 'usda'
+      ? '<p class="muted small" style="margin:0">Found in the USDA branded foods database (' + esc(rec[2]) + '), as reported by the manufacturer. Data from <strong>' + esc(brandDateText(rec)) + '</strong>.</p>'
+      : '<p class="muted small" style="margin:0">Found on Open Food Facts (' + esc(rec[2]) + '), a free, crowd-sourced product database.</p>' +
+        '<div class="sv-warn"><strong>This comes from other people\u2019s scans, not the manufacturer.</strong> Check it against your package the first time.</div>') +
+    '<p style="margin:8px 0 0"><strong>' + esc(rec[19] || '1 serving') + ' (' + fmtG(rec[3]) + ' ' + (rec[4] === 'ml' ? 'mL' : 'g') + ')</strong>: ' + n0(srv(5)) + ' kcal, ' + n0(srv(6)) + ' g protein, ' + n0(srv(7)) + ' g carbs, ' + n0(srv(8)) + ' g fat; ' + esc(extra) + '.</p>' +
     '<div class="ai-actions"><button class="btn primary big" data-action="scan-off-use">Use this product</button><button class="btn" data-action="scan-off-skip">This is not my package</button></div>' +
     '<p style="margin:6px 0 0"><button class="link" data-action="report" data-kind="brand">Report a wrong number</button></p>' +
-    '<p class="muted small" style="margin:8px 0 0">Source: Open Food Facts (openfoodfacts.org) — a free, crowd-sourced public database, not the USDA list and not checked by me or by Anthropic.</p></article>';
+    '<p class="muted small" style="margin:8px 0 0">' + (rec.src === 'usda' ? 'Source: USDA FoodData Central, Branded Foods (public domain), looked up live. Check it against your package the first time.' : 'Source: Open Food Facts (openfoodfacts.org) \u2014 a free, crowd-sourced public database, not the USDA list and not checked by me or by Anthropic.') + '</p></article>';
 }
 async function checkOffInBackground(code, slot) {
   // Fire-and-forget, used only for a live-camera miss, so scanning keeps going at its normal pace instead of freezing
@@ -3674,8 +3775,9 @@ async function checkOffInBackground(code, slot) {
   // product, undo that note, link the barcode for next time, and -- in one-tap mode -- log it after all, since the
   // person scanned it to log it. (The first version only linked it and asked for a second scan, and left it sitting
   // in the "not found" list even though it had been found.)
-  const rec = await lookupOpenFoodFacts(code);
+  const rec = await lookupOnline(code);
   OFF_CACHE[code] = rec;
+  if (!rec) reportMiss(code);
   if (!rec || foodForCode(code)) return;
   const food = offFood(rec);
   if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
@@ -3693,15 +3795,15 @@ async function checkOffInBackground(code, slot) {
   if (r) {
     announce(true, 'Found online \u2014 added ' + r.food, addedDetail(r), !!(SCAN.stream && !$('scanLive').hidden));
     if (SCAN.stream && SCAN.timer) setTimeout(() => { if (SCAN.timer) clearLiveResult(); }, HOLD_MS);   // scanning carried on meanwhile; just clear the banner
-    toast('Added ' + r.food + ' (found on Open Food Facts).', () => undoAdded(id));
-  } else toast('Found online: ' + food.name + ' \u2014 scan it again to log it.');
+    toast('Added ' + r.food + ' (found in ' + srcName(rec) + ').', () => undoAdded(id));
+  } else toast('Found in ' + srcName(rec) + ': ' + food.name + ' \u2014 scan it again to log it.');
 }
 function scanUseOff() {
   const rec = OFF_CACHE[ui.scan.code];
   if (!rec) return;
   const food = offFood(rec);
   if (!state.customFoods.some(f => f.id === food.id)) state.customFoods.push(food);
-  state.barcodes[ui.scan.code] = food.id;
+  state.barcodes[ui.scan.code] = food.id; clearUnmatched(ui.scan.code);
   saveState(); setDefaultAmount(food); render();
   toast('Saved "' + food.name + '". Scanning it again will find it instantly.');
 }
@@ -3723,7 +3825,7 @@ function scanUseBrand() {
   if (!rec) return;
   const food = brandFood(rec);
   if (!state.customFoods.some(f => f.id === food.id)) state.customFoods.push(food);
-  state.barcodes[ui.scan.code] = food.id;
+  state.barcodes[ui.scan.code] = food.id; clearUnmatched(ui.scan.code);
   saveState(); setDefaultAmount(food); render();
   toast('Saved "' + food.name + '". Scanning it again will find it instantly.');
 }
@@ -3766,8 +3868,10 @@ function scanSaveForm() {
   if (bad) { toast(bad); return; }
   const food = labelToFood(F);
   state.customFoods.push(food);
-  state.barcodes[ui.scan.code] = food.id;
+  state.barcodes[ui.scan.code] = food.id; clearUnmatched(ui.scan.code);
   saveState();
+  const pick = ['basis', 'servingLabel', 'servingG', 'kcal', 'p', 'c', 'f', 'na', 'k', 'su', 'fib', 'sat', 'cho', 'vd', 'ca', 'fe', 'state'].filter(k => F[k] !== '' && F[k] != null).map(k => k + '=' + F[k]).join('; ');
+  sendReport('Label entered', showCode(ui.scan.code), name, pick);
   ui.scan.form = null; setDefaultAmount(food);
   render();
   toast('Saved "' + food.name + '". Scanning it again will find it instantly.');
@@ -3821,6 +3925,103 @@ function formHtml(F) {
     (labelCheck(F) ? '<p class="sv-warn" role="alert" style="margin:8px 0 0">' + esc(labelCheck(F)) + '</p>' : '') +
     '<div class="ai-actions"><button class="btn primary" data-action="scan-save-form">Save product</button><button class="btn" data-action="scan-cancel-form">Cancel</button></div></div>';
 }
+/* ---------- "My scanned foods": every product you have scanned, A to Z, one tap to log it again ----------
+   A scanned product used to end up only in the big Foods list (mixed in with hundreds of built-in foods) and as a
+   one-item "meal" on the Day tab, which made it hard to find again. This keeps them together, alphabetical, searchable
+   by name or barcode, right on the Scan tab, and logs one serving of any of them to the chosen meal in one tap. */
+function scannedFoods() {
+  const fm = foodMap(), by = new Map();
+  for (const [code, id] of Object.entries(state.barcodes || {})) {
+    const f = fm[id]; if (!f) continue;
+    const e = by.get(id) || { food: f, codes: [] }; e.codes.push(code); by.set(id, e);
+  }
+  return [...by.values()].sort((a, b) => a.food.name.localeCompare(b.food.name, undefined, { sensitivity: 'base', numeric: true }));
+}
+function myScansListHtml() {
+  const raw = ui.myScans.q.trim(), q = raw.toLowerCase(), digits = raw.replace(/\D/g, '');
+  const all = scannedFoods();
+  if (!all.length) return '<p class="muted small" style="margin:0">Nothing yet. Every product you scan is kept here, A to Z, so you can log it again without scanning.</p>';
+  const list = q ? all.filter(e => e.food.name.toLowerCase().includes(q) || (digits.length >= 3 && e.codes.some(c => c.includes(digits)))) : all;
+  if (!list.length) return '<p class="muted small" style="margin:0">No scanned food matches “' + esc(raw) + '”.</p>';
+  let html = '', letter = '';
+  for (const e of list) {
+    const f = e.food, first = (f.name.match(/[A-Za-z0-9]/) || ['#'])[0].toUpperCase(), key = /[A-Z]/.test(first) ? first : '#';
+    if (key !== letter) { if (letter) html += '</ul>'; html += '<h4 class="az">' + key + '</h4><ul class="my-scans">'; letter = key; }
+    const sv = f.serving && f.serving.grams > 0 ? f.serving : null, kc = Math.round((f.kcal || 0) * (sv ? sv.grams : 100) / 100);
+    html += '<li><span><strong>' + esc(f.name) + '</strong><br><span class="muted small">' + esc(sv ? (sv.label || 'serving') : '100 g') + ' · ' + kc + ' kcal · barcode ' + esc(showCode(e.codes[0])) + (e.codes.length > 1 ? ' (+' + (e.codes.length - 1) + ')' : '') + '</span></span>' +
+      '<button class="btn" data-action="scan-mylog" data-id="' + esc(f.id) + '" aria-label="Log ' + esc(f.name) + '">+ Log</button></li>';
+  }
+  return html + '</ul>';
+}
+function myScansHtml(dayLabel) {
+  const n = scannedFoods().length, M = ui.myScans;
+  return '<section class="my-scans-box"><button class="btn big my-scans-toggle" data-action="scan-mytoggle" aria-expanded="' + !!M.open + '">' +
+    '<span>' + (M.open ? '▾' : '▸') + ' My scanned foods, A–Z</span><span class="my-count">' + n + '</span></button>' +
+    (M.open ? '<div class="my-scans-body"><div class="ai-row"><div><label for="myScanQ">Find</label><input id="myScanQ" type="search" data-scan="myq" value="' + esc(M.q) + '" placeholder="name or barcode" autocomplete="off"></div>' +
+      '<div><label for="mySlot">Add to</label><select id="mySlot" data-scan="slot">' + optionsHtml(SLOTS, ui.scan.slot) + '</select></div></div>' +
+      '<p class="muted small" style="margin:4px 0 8px">“+ Log” adds one serving to ' + esc(SLOT_LABEL(ui.scan.slot)) + ' on ' + esc(dayLabel) + '.</p>' +
+      '<div id="myScanList">' + myScansListHtml() + '</div></div>' : '') + '</section>';
+}
+function myScanLog(id) {
+  const f = foodMap()[id]; if (!f) return;
+  const hasServing = !!(f.serving && f.serving.grams > 0);
+  const r = logFood(f, hasServing ? 1 : 100, hasServing ? 1 : 0, ui.scan.slot);
+  if (!r) return;
+  const nid = noteAdded(r);
+  render();
+  announce(true, 'Added ' + r.food, addedDetail(r), false);
+  toast('Added ' + r.food + ' to ' + SLOT_LABEL(r.slot) + '.', () => undoAdded(nid));
+}
+/* ---------- "Not recognized": barcodes nothing knew, fixable right here ----------
+   One-tap scanning just moves on after a miss, so fixing one used to mean turning one-tap off and scanning it again.
+   This lists every barcode that matched nothing, with a Fix button (checks the food databases again, then offers the
+   product, or the label-numbers form and "link to a food") and "Check all again" for barcodes missed before the
+   USDA lookup existed. A fixed barcode drops off the list. */
+ui.notRec = { open: false, busy: false, msg: '' };
+const unmatchedCodes = () => (state.unmatched || []).filter(u => u.barcode);
+function notRecHtml() {
+  const list = unmatchedCodes(), N = ui.notRec;
+  if (!list.length && !N.msg) return '';
+  return '<section class="my-scans-box notrec-box"><button class="btn big my-scans-toggle" data-action="scan-nrtoggle" aria-expanded="' + !!N.open + '">' +
+    '<span>' + (N.open ? '▾' : '▸') + ' Not recognized — fix them</span><span class="my-count nr-count">' + list.length + '</span></button>' +
+    (N.open ? '<div class="my-scans-body">' + (N.msg ? '<p class="ai-note" role="status" style="margin:0 0 8px">' + esc(N.msg) + '</p>' : '') +
+      (list.length ? '<div class="ai-actions" style="margin:0 0 6px"><button class="btn" data-action="scan-nrcheck"' + (N.busy ? ' disabled' : '') + '>' + (N.busy ? 'Checking…' : 'Check all again') + '</button></div>' +
+        '<ul class="my-scans">' + list.map(u => '<li><span><strong>Barcode ' + esc(showCode(u.barcode)) + '</strong><br><span class="muted small">scanned ' + (u.n || 1) + '×, last ' + esc(u.last || '') + '</span></span>' +
+          '<button class="btn" data-action="scan-fix" data-code="' + esc(u.barcode) + '">Fix</button></li>').join('') + '</ul>' : '') + '</div>' : '') + '</section>';
+}
+async function fixUnmatched(code) {
+  Object.assign(ui.scan, { code, typed: showCode(code), msg: 'Checking the food databases again…', form: null, linkQuery: '', photoFailed: false, brandSkip: '', offSkip: '' });
+  render();
+  const top = () => { const el = document.querySelector('.scan-code'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
+  top();
+  if (!foodForCode(code) && !brandRecord(code)) {
+    delete OFF_CACHE[code];
+    const rec = await lookupOnline(code);
+    if (ui.scan.code !== code) return;
+    OFF_CACHE[code] = rec;
+  }
+  ui.scan.msg = (OFF_CACHE[code] || brandRecord(code) || foodForCode(code)) ? '' : 'Still not in any food database. Set it up once below — from the label, or by linking it to a food already in the app — and it will be recognized from now on.';
+  render(); top();
+}
+async function checkAllUnmatched() {
+  const N = ui.notRec; if (N.busy) return;
+  const codes = unmatchedCodes().map(u => u.barcode);
+  N.busy = true; N.msg = ''; render();
+  let found = 0;
+  for (const code of codes) {
+    if (foodForCode(code)) { clearUnmatched(code); found++; continue; }
+    let rec = brandRecord(code), food = null;
+    if (rec) food = brandFood(rec);
+    else { delete OFF_CACHE[code]; rec = await lookupOnline(code); OFF_CACHE[code] = rec; if (rec) food = offFood(rec); }
+    if (food) {
+      if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
+      state.barcodes[code] = food.id; clearUnmatched(code); found++;
+    }
+  }
+  N.busy = false;
+  N.msg = found ? 'Found ' + found + ' of ' + codes.length + '. Those are recognized from now on (they are under My scanned foods). Nothing was added to your log.' : 'None of these are in the food databases yet. Use Fix to set each one up once.';
+  saveState(); render();
+}
 function viewScan() {
   const S = ui.scan;
   const label = parseKey(ui.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
@@ -3856,7 +4057,7 @@ function viewScan() {
     }
   }
   return '<div class="scan"><div class="datebar"><h2>Scan a barcode</h2><label for="datePick" style="margin:0">Adding to</label>' +
-    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Day to add scanned foods to"></div>' + sessionCardHtml() +
+    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Day to add scanned foods to"></div>' + sessionCardHtml() + myScansHtml(label) + notRecHtml() +
     (block && !block.retry
       ? '<div class="scan-actions"><label class="btn primary big" for="scanPhoto">Take a photo of the barcode</label><input type="file" id="scanPhoto" data-scan="photo" accept="image/*" capture="environment" class="sr-only">' +
         '<label class="btn big" for="scanPick">Choose a photo</label><input type="file" id="scanPick" data-scan="photo" accept="image/*" class="sr-only"></div>' +
@@ -3897,6 +4098,11 @@ function scanClick(a, el) {
   else if (a === 'scan-cancel') stopLive();
   else if (a === 'scan-lens') toggleLens();
   else if (a === 'scan-undo') undoAdded(el && el.dataset ? el.dataset.id : null);
+  else if (a === 'scan-mytoggle') { ui.myScans.open = !ui.myScans.open; render(); }
+  else if (a === 'scan-nrtoggle') { ui.notRec.open = !ui.notRec.open; render(); }
+  else if (a === 'scan-nrcheck') checkAllUnmatched();
+  else if (a === 'scan-fix') fixUnmatched(el && el.dataset ? el.dataset.code : '');
+  else if (a === 'scan-mylog') myScanLog(el && el.dataset ? el.dataset.id : null);
   else if (a === 'scan-session-clear') { SCAN.session = []; renderLiveSession(); render(); }
   else if (a === 'scan-brand-use') scanUseBrand();
   else if (a === 'scan-brand-skip') { ui.scan.brandSkip = ui.scan.code; render(); }
@@ -3905,6 +4111,17 @@ function scanClick(a, el) {
   else if (a === 'scan-lookup') {
     const v = ui.scan.typed.trim();
     if (!v) { toast('Type the number printed under the barcode.'); return; }
+    // A Bluetooth scanner held on an item (or with its trigger held down) sends the same barcode again and again,
+    // each one logging the item again. In one-tap mode the same barcode within 3 seconds of the last one is now
+    // treated as that same scan; every repeat restarts the 3 seconds, so a held trigger never sneaks one through.
+    // To log a second one on purpose, just wait a moment and scan it again.
+    const code = normalizeCode(v), now = Date.now(), lk = SCAN.lastKey;
+    if (state.autoScan && code && lk && lk.code === code && now - lk.t < 3000) {
+      lk.t = now; ui.scan.typed = ''; render();
+      flashMark(true, 'Already added', 'Same item scanned twice \u2014 counted once. Wait a moment to add another.', 'dup');
+      return;
+    }
+    SCAN.lastKey = { code, t: now };
     return handleCode(v);
   }
   else if (a === 'scan-again') { Object.assign(ui.scan, { code: '', typed: '', msg: '', form: null, photoFailed: false }); render(); }
@@ -3915,7 +4132,7 @@ function scanClick(a, el) {
   else if (a === 'scan-link') {
     const id = $('scanLinkFood') && $('scanLinkFood').value;
     if (!id || !foodMap()[id]) { toast('Search for a food and select it first.'); return; }
-    state.barcodes[ui.scan.code] = id; saveState();
+    state.barcodes[ui.scan.code] = id; clearUnmatched(ui.scan.code); saveState();
     setDefaultAmount(foodMap()[id]); toast('Linked. Scanning it again will find it instantly.'); render();
   }
   else if (a === 'scan-stop') { if (SCAN.ctl) SCAN.ctl.abort(); }
@@ -3925,6 +4142,7 @@ function scanInput(t) {
   const k = t.dataset.scan;
   if (k === 'typed') ui.scan.typed = t.value;
   else if (k === 'linkQuery') { ui.scan.linkQuery = t.value; refreshLinkOptions(); }
+  else if (k === 'myq') { ui.myScans.q = t.value; const el = $('myScanList'); if (el) el.innerHTML = myScansListHtml(); }
   else if (k.startsWith('f:') && ui.scan.form) ui.scan.form[k.slice(2)] = t.value;
 }
 function scanChange(t) {
@@ -3941,7 +4159,7 @@ function scanChange(t) {
     if (i === 0 && ui.scan.qty < 10) ui.scan.qty = 100; else if (i !== 0 && wasGrams && ui.scan.qty === 100) ui.scan.qty = 1;
     render();
   }
-  else if (k === 'slot') ui.scan.slot = t.value;
+  else if (k === 'slot') { ui.scan.slot = t.value; if (t.id === 'mySlot') render(); }
   else if (k === 'f:basis' && ui.scan.form) { ui.scan.form.basis = t.value; render(); }
   else if (k.startsWith('f:') && ui.scan.form) ui.scan.form[k.slice(2)] = t.value;
   else if (k === 'autoAdd') { state.autoScan = !!t.checked; saveState(); }
@@ -5302,7 +5520,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.03-10';
+const APP_VERSION = '2026.10.03-14';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
@@ -5366,7 +5584,7 @@ VIEWS.help = function () {
     '<li><strong>Last backup:</strong> ' + (state.lastBackup ? esc(String(state.lastBackup).slice(0, 10)) + ' (' + d + ' days ago)' : 'none yet') + '.</li></ul>' +
     '<h3>Keep your data safe</h3><ul class="sv-steps"><li>On an iPhone or iPad: in Safari, tap the Share button, then "Add to Home Screen", and open the app from there. Safari can erase the saved data of a website you have not opened for a week, and apps added to the home screen are counted separately. That is Apple\'s behavior as I understand it, so a backup is still your real protection.</li>' +
     '<li>Download a backup every week. The app reminds you when it has been a week.</li></ul>' +
-    '<h3>Privacy</h3><p class="muted small" style="margin:0">This site has no accounts and no analytics. What you log stays in this browser on this device and is sent nowhere unless you download a backup and share it. The one exception: scanning a barcode this device has not seen before and that is not in the built-in list sends just that barcode number (nothing about you or your food log) to Open Food Facts, a free public product database, so it can be recognised automatically instead of you typing it in by hand. The website\'s host may keep ordinary visit logs (such as IP addresses) that this app can not see. To delete your data, clear this site\'s data in your browser settings.</p>';
+    '<h3>Privacy</h3><p class="muted small" style="margin:0">This site has no accounts and no analytics. What you log stays in this browser on this device and is sent nowhere unless you download a backup and share it. The exceptions are all about barcodes: scanning a barcode this device has not seen before and that is not in the built-in list sends just that barcode number (nothing about you or your food log) to two free public product databases, USDA FoodData Central and Open Food Facts, so it can be recognised automatically instead of you typing it in by hand. If the person who runs this site has turned it on, a barcode that neither database knows, and label numbers you type in for a product, are also sent to them so the product can be added for everyone \u2014 again only the barcode and the product\u2019s numbers, never anything about you. The website\'s host may keep ordinary visit logs (such as IP addresses) that this app can not see. To delete your data, clear this site\'s data in your browser settings.</p>';
   const k = base.lastIndexOf('</div>');
   return base.slice(0, k) + extra + base.slice(k);
 };
