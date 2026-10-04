@@ -140,6 +140,30 @@ select[size] option { padding: 6px 8px; border-radius: 4px; }
 .datebar h2 { flex: 1 1 260px; }
 .datebar input[type="date"] { width: auto; }
 .daynav-row { display: flex; gap: 10px; align-items: center; }
+.wk-avg { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 10px 12px; margin: 12px 0; }
+.wk-avg-tabs, .wk-mode { display: flex; gap: 6px; }
+.wk-avg-tabs { margin-bottom: 8px; }
+.wk-avg-tabs button, .wk-mode button { flex: 1; border: 1px solid var(--line); background: none; border-radius: 8px; padding: 7px 6px; font: inherit; font-weight: 700; color: var(--muted); cursor: pointer; }
+.wk-avg-tabs button.on, .wk-mode button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.wk-avg-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; text-align: center; }
+.wk-avg-grid div { background: color-mix(in srgb, var(--accent) 7%, transparent); border-radius: 8px; padding: 6px 2px; }
+.wk-avg-grid b { display: block; font-size: 1.1rem; }
+.wk-avg-grid span { display: block; font-size: 0.72rem; color: var(--muted); line-height: 1.2; }
+.wk-avg-note { font-size: 0.78rem; color: var(--muted); margin: 6px 0 0; }
+.wk-mode { margin: 0 0 10px; }
+.wo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (min-width: 900px) { .wo-grid { grid-template-columns: repeat(4, 1fr); } }
+.wo-card { display: flex; flex-direction: column; gap: 3px; text-align: left; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 8px 9px; font: inherit; color: var(--ink); cursor: pointer; min-width: 0; }
+.wo-card.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.wo-head { display: flex; justify-content: space-between; gap: 6px; font-weight: 700; font-size: 0.95rem; }
+.wo-kcal { color: var(--accent); white-space: nowrap; }
+.wo-line { display: flex; gap: 5px; font-size: 0.8rem; line-height: 1.25; }
+.wo-line b { color: var(--muted); flex: 0 0 auto; }
+.wo-line span { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.wo-empty { font-size: 0.8rem; color: var(--muted); }
+.wo-macros { font-size: 0.74rem; color: var(--muted); margin-top: auto; padding-top: 3px; }
+.wo-total { background: none; cursor: default; }
+.wo-big { font-weight: 700; font-size: 1.05rem; color: var(--accent); }
 .daynav-row .btn { white-space: nowrap; }
 @media (max-width: 640px) { .daynav h2 { flex-basis: 100%; } .daynav-row { flex: 1 1 100%; } .daynav-row:first-of-type .btn { flex: 1; } .daynav-row input[type="date"] { flex: 1; min-width: 0; } }
 .plan { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 40px; margin-top: 8px; }
@@ -2691,11 +2715,62 @@ function viewWeek() {
     '<button class="btn" data-action="copy-to-next-week">Copy this week to next week</button>' +
     keepBox() + '</div>';
 
-  return '<div class="datebar"><h2>' + short(keys[0]) + ' – ' + short(keys[6]) + '</h2>' +
-    '<button class="btn" data-action="prev-week">Previous week</button>' +
-    '<button class="btn" data-action="next-week">Next week</button>' +
-    '<button class="btn" data-action="this-week">This week</button></div>' + weekCopyBar + clipBar() +
+  const nav = '<div class="datebar daynav"><h2>' + short(keys[0]) + ' \u2013 ' + short(keys[6]) + '</h2>' +
+    '<div class="daynav-row"><button class="btn" data-action="prev-week" aria-label="Previous week">\u25c0 Prev</button>' +
+    '<button class="btn" data-action="this-week">This week</button>' +
+    '<button class="btn" data-action="next-week" aria-label="Next week">Next \u25b6</button></div></div>';
+  const modeBar = '<div class="wk-mode" role="group" aria-label="How to show the week">' +
+    '<button class="' + (ui.wkMode === 'edit' ? '' : 'on') + '" data-action="wk-mode" data-mode="overview" aria-pressed="' + (ui.wkMode !== 'edit') + '">Overview</button>' +
+    '<button class="' + (ui.wkMode === 'edit' ? 'on' : '') + '" data-action="wk-mode" data-mode="edit" aria-pressed="' + (ui.wkMode === 'edit') + '">Plan &amp; edit</button></div>';
+  if (ui.wkMode !== 'edit') return nav + wkAveragesHtml(keys) + modeBar + wkOverviewHtml(keys, today);
+  return nav + wkAveragesHtml(keys) + modeBar + weekCopyBar + clipBar() +
     '<p class="wk-summary">' + summary + '</p>' + grid + '<div class="wk-days">' + days + '</div>';
+}
+/* ---------- Week tab: a clean overview of the week's foods, and macro averages ----------
+   The full week (every meal with its own + Add menu) ran about four phone screens. The overview shows all seven days as
+   compact cards, two to a row, listing what was eaten at each meal; tapping a card opens that day. "Plan & edit" brings
+   back the full week. The averages box sits above both. */
+ui.wkMode = 'overview';
+ui.wkAvg = 'week';
+function wkAveragesHtml(keys) {
+  const today = keyOf(new Date());
+  let range, label;
+  if (ui.wkAvg === 'month') {
+    const end = keys[6] < today ? keys[6] : today;           // the 30 days up to today (or to the end of the week shown, if it is in the past)
+    range = []; for (let i = 0; i < 30; i++) range.push(shiftKey(end, -i));
+    label = 'last 30 days';
+  } else { range = keys; label = 'this week'; }
+  const logged = range.map(k => dayTotals(k)).filter(t => t.kcal > 0), n = logged.length;
+  const avg = f => n ? logged.reduce((a, t) => a + (t[f] || 0), 0) / n : 0;
+  const tg = state.targets || {};
+  const tile = (v, unit, name, target) => '<div><b>' + n0(v) + unit + '</b><span>' + name + (target ? ' \u00b7 goal ' + n0(target) + unit : '') + '</span></div>';
+  return '<section class="wk-avg" aria-label="Average per day"><div class="wk-avg-tabs" role="group" aria-label="Average over">' +
+    '<button class="' + (ui.wkAvg === 'month' ? '' : 'on') + '" data-action="wk-avg" data-range="week" aria-pressed="' + (ui.wkAvg !== 'month') + '">This week</button>' +
+    '<button class="' + (ui.wkAvg === 'month' ? 'on' : '') + '" data-action="wk-avg" data-range="month" aria-pressed="' + (ui.wkAvg === 'month') + '">Last 30 days</button></div>' +
+    (n ? '<div class="wk-avg-grid">' + tile(avg('kcal'), '', 'kcal / day', tg.kcal) + tile(avg('p'), ' g', 'protein', tg.protein) + tile(avg('c'), ' g', 'carbs') + tile(avg('f'), ' g', 'fat') + '</div>' +
+      '<p class="wk-avg-note">Average per day across the ' + n + ' of ' + range.length + ' days (' + label + ') with food logged \u2014 empty days are left out.</p>'
+      : '<p class="wk-avg-note">Nothing logged ' + label + ' yet.</p>') + '</section>';
+}
+function wkOverviewHtml(keys, today) {
+  const L = { breakfast: 'B', lunch: 'L', dinner: 'D', snacks: 'S' };
+  const byId = {}; state.meals.forEach(m => { byId[m.id] = m; });
+  const cards = keys.map(k => {
+    const day = state.plan[k] || {}, t = dayTotals(k), d = parseKey(k);
+    const lines = SLOT_IDS.map(sl => {
+      const groups = groupEntries(day[sl] || []).filter(g => byId[g.id])
+        .sort((a, b) => byId[a.id].name.localeCompare(byId[b.id].name, undefined, { sensitivity: 'base', numeric: true }));
+      if (!groups.length) return '';
+      return '<div class="wo-line"><b title="' + esc(SLOT_LABEL(sl)) + '">' + L[sl] + '</b><span>' + groups.map(g => (g.n > 1 ? g.n + '\u00d7 ' : '') + esc(byId[g.id].name.replace(/\s*\([^()]*\)\s*$/, ''))).join('; ') + '</span></div>';
+    }).join('');
+    return '<button class="wo-card' + (k === today ? ' today' : '') + '" data-action="open-day" data-date="' + k + '" aria-label="Open ' + esc(d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })) + '">' +
+      '<span class="wo-head"><span>' + esc(d.toLocaleDateString(undefined, { weekday: 'short' })) + ' ' + d.getDate() + '</span><span class="wo-kcal">' + (t.kcal ? n0(t.kcal) + ' kcal' : '') + '</span></span>' +
+      (lines || '<span class="wo-empty">Nothing logged</span>') +
+      (t.kcal ? '<span class="wo-macros">P ' + n0(t.p) + ' \u00b7 C ' + n0(t.c) + ' \u00b7 F ' + n0(t.f) + ' g</span>' : '') + '</button>';
+  });
+  const wt = keys.reduce((a, k) => { const t = dayTotals(k); a.kcal += t.kcal; a.p += t.p; a.c += t.c; a.f += t.f; return a; }, { kcal: 0, p: 0, c: 0, f: 0 });
+  cards.push('<div class="wo-card wo-total"><span class="wo-head"><span>Week total</span></span><span class="wo-big">' + n0(wt.kcal) + ' kcal</span>' +
+    '<span class="wo-macros">P ' + n0(wt.p) + ' \u00b7 C ' + n0(wt.c) + ' \u00b7 F ' + n0(wt.f) + ' g</span></div>');
+  return '<div class="wo-grid">' + cards.join('') + '</div><p class="muted small" style="margin:8px 0 0">B breakfast \u00b7 L lunch \u00b7 D dinner \u00b7 S snacks. Tap a day to open it.</p>';
 }
 
 function viewMeals() {
@@ -5337,6 +5412,8 @@ document.addEventListener('click', e => {
     toast('Added ' + r.name + ' to ' + SLOT_LABEL(ui.fa.slot) + '.', () => { state.plan = JSON.parse(r.before); saveState(); render(); });
   }
   else if (a === 'copy-day-onto-today') { const sel = $('copyDayFrom'); if (sel && sel.value) runCopy([[sel.value, ui.date]], SLOT_IDS); }
+  else if (a === 'wk-mode') { ui.wkMode = el.dataset.mode === 'edit' ? 'edit' : 'overview'; render(); }
+  else if (a === 'wk-avg') { ui.wkAvg = el.dataset.range === 'month' ? 'month' : 'week'; render(); }
   else if (a === 'wk-toggle') wkToggle(el.dataset.date);
   else if (a === 'wk-collapse-all') wkAll(true);
   else if (a === 'wk-expand-all') wkAll(false);
@@ -5560,7 +5637,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.04-2';
+const APP_VERSION = '2026.10.04-4';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
@@ -5621,6 +5698,8 @@ VIEWS.help = function () {
     'Download a backup before you close this tab, or switch to Safari or Chrome directly (not a link opened inside another app) and reopen this page there.</p>');
   const extra = '<h3>This site</h3><ul class="sv-steps"><li><strong>Version</strong> ' + esc(APP_VERSION) + '. Product list: ' + BRAND_PACK.length + ' products' + (SA.productsBuilt ? ' (built ' + esc(SA.productsBuilt) + ')' : '') + '. ' + esc(SA.productsMsg) + '</li>' +
     '<li><button class="btn" data-action="sa-check">Check for a newer version</button> <span class="muted small">' + esc(SA.checkMsg) + '</span></li>' +
+    '<li><strong>Address</strong> ' + esc(location.origin + location.pathname.replace(/index\\.html$/, '')) + ' <span class="muted small">(if this is not the address you share, this copy will never see your updates)</span></li>' +
+    '<li><button class="btn" data-action="sa-update">Reload the newest version</button> <span class="muted small">Stuck on an old version? This fetches the app fresh from the website. Your data is not touched.</span></li>' +
     '<li><strong>Last backup:</strong> ' + (state.lastBackup ? esc(String(state.lastBackup).slice(0, 10)) + ' (' + d + ' days ago)' : 'none yet') + '.</li></ul>' +
     '<h3>Keep your data safe</h3><ul class="sv-steps"><li>On an iPhone or iPad: in Safari, tap the Share button, then "Add to Home Screen", and open the app from there. Safari can erase the saved data of a website you have not opened for a week, and apps added to the home screen are counted separately. That is Apple\'s behavior as I understand it, so a backup is still your real protection.</li>' +
     '<li>Download a backup every week. The app reminds you when it has been a week.</li></ul>' +
@@ -5642,6 +5721,7 @@ async function checkForUpdate(manual) {
     const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
     if (!res.ok) return;
     const j = await res.json();
+    if (j && j.version) SA.serverVersion = j.version;
     if (j && j.version && j.version !== APP_VERSION && !SA.update) { SA.update = true; render(); }
   } catch (e) { /* offline: nothing to check */ }
 }
@@ -5655,7 +5735,7 @@ document.addEventListener('click', e => {
   const a = el.dataset.action;
   if (a === 'sa-update') updateNow();
   else if (a === 'sa-snooze') { state.backupNudgeUntil = shiftKey(keyOf(new Date()), 3); saveState(); render(); }
-  else if (a === 'sa-check') { SA.checkMsg = 'Checking\u2026'; render(); checkForUpdate(true).then(() => { SA.checkMsg = SA.update ? 'A newer version is available.' : 'You have the latest version.'; render(); }); }
+  else if (a === 'sa-check') { SA.checkMsg = 'Checking\u2026'; render(); checkForUpdate(true).then(() => { const sv = SA.serverVersion ? ' (the website has ' + SA.serverVersion + ')' : ''; SA.checkMsg = SA.update ? 'A newer version is available' + sv + '.' : SA.serverVersion ? 'You have the latest version' + sv + '.' : 'Could not reach the website to check. Are you online?'; render(); }); }
 });
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
 loadProducts();
