@@ -205,7 +205,15 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .keep input { width: auto; }
 .slot-tools { display: flex; align-items: baseline; gap: 12px; }
 /* Per-meal scan links: their own short line under the meal name, so they never get squeezed off the edge */
-.mlinks { display: flex; gap: 18px; margin: -2px 0 6px; font-size: 0.92rem; }
+.mlinks { display: flex; gap: 14px; margin: -2px 0 6px; font-size: 0.92rem; flex-wrap: wrap; }
+.mlinks .link[aria-expanded="true"] { font-weight: 700; }
+/* Quick copy for one meal: two short rows, "copy in" and "copy out" */
+.sc-copy { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.sc-copy-row + .sc-copy-row { margin-top: 8px; }
+.sc-copy-cap { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.82rem; color: var(--muted); margin: 0 0 3px; }
+.sc-copy-ctl { display: flex; gap: 6px; }
+.sc-copy-ctl select { flex: 1 1 0; min-width: 0; font-size: 16px; padding: 6px 4px; }
+.sc-copy-ctl .btn { flex: 0 0 auto; padding: 6px 10px; }
 .mlinks .link { white-space: nowrap; }
 .sc-ready { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 4px 10px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .sc-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
@@ -1268,6 +1276,62 @@ async function scanBulkSubmit() {
   render();
   if (added) announce(true, added + ' added', 'to ' + SLOT_LABEL(ui.scan.slot), false); else if (misses.length) announce(false, 'Nothing added', misses.length + ' not recognized', false);
   toast(added + ' added to ' + SLOT_LABEL(ui.scan.slot) + (misses.length ? ', ' + misses.length + ' not found (noted under Help).' : '.'));
+}
+
+// ---------- per-meal Quick copy (Day tab) ----------
+// "Copy in": another day's meal (any meal) is added to this one. "Copy out": this meal is added to other days (any meal).
+// Copies ADD to what is already there, never replace it, and one Undo takes the whole copy back.
+function dayWord(k) {
+  const t = keyOf(new Date());
+  if (k === t) return 'Today';
+  if (k === shiftKey(t, -1)) return 'Yesterday';
+  if (k === shiftKey(t, 1)) return 'Tomorrow';
+  return parseKey(k).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+const slotHasFood = (k, sl) => !!((state.plan[k] || {})[sl] || []).length;
+function slotCopyHtml(id, name) {
+  const C = ui.slotCopyPick || (ui.slotCopyPick = {});
+  // Copy in: recent days that have food (newest first), plus the day shown (to copy from one of its other meals).
+  const from = Object.keys(state.plan).filter(k => k <= ui.date && SLOT_IDS.some(x => slotHasFood(k, x))).sort().reverse().slice(0, 30);
+  const prev = shiftKey(ui.date, -1);
+  const fromDay = from.includes(C.fromDay) ? C.fromDay : (from.find(k => k < ui.date) || from[0] || '');
+  const fromSlot = SLOT_IDS.includes(C.fromSlot) ? C.fromSlot : id;
+  const to = []; for (let i = 0; i <= 14; i++) to.push(shiftKey(ui.date, i));
+  const later = laterDaysInWeek(ui.date);
+  const toDay = C.toDay && (C.toDay === 'rest-of-week' ? later.length : to.includes(C.toDay)) ? C.toDay : shiftKey(ui.date, 1);
+  const toSlot = SLOT_IDS.includes(C.toSlot) ? C.toSlot : id;
+  const slotOpts = sel => SLOTS.map(([v, l]) => '<option value="' + v + '"' + (v === sel ? ' selected' : '') + '>' + esc(l) + '</option>').join('');
+  const dayLab = k => k === ui.date && k !== keyOf(new Date()) ? 'This day' : dayWord(k);
+  return '<div class="sc-copy" role="group" aria-label="Quick copy for ' + name + '">' +
+    '<div class="sc-copy-row"><p class="sc-copy-cap"><span>Copy into ' + name + ' from</span><button class="link" data-action="slot-copy-close">Close</button></p>' +
+    (from.length
+      ? '<div class="sc-copy-ctl"><select id="scFromDay" data-sccopy="fromDay" aria-label="Day to copy from">' + from.map(k => '<option value="' + k + '"' + (k === fromDay ? ' selected' : '') + '>' + esc(dayLab(k)) + (k === prev && dayLab(k) !== 'Yesterday' ? ' (day before)' : '') + '</option>').join('') + '</select>' +
+        '<select id="scFromSlot" data-sccopy="fromSlot" aria-label="Meal to copy from">' + slotOpts(fromSlot) + '</select>' +
+        '<button class="btn" data-action="slot-copy-in" data-slot="' + id + '">Copy in</button></div>'
+      : '<p class="muted small" style="margin:0">No earlier days with food yet.</p>') + '</div>' +
+    '<div class="sc-copy-row"><p class="sc-copy-cap"><span>Copy this ' + name + ' to</span></p>' +
+    '<div class="sc-copy-ctl"><select id="scToDay" data-sccopy="toDay" aria-label="Day to copy to">' +
+      (later.length ? '<option value="rest-of-week"' + (toDay === 'rest-of-week' ? ' selected' : '') + '>Rest of this week</option>' : '') +
+      to.map(k => '<option value="' + k + '"' + (k === toDay ? ' selected' : '') + '>' + esc(dayLab(k)) + '</option>').join('') + '</select>' +
+    '<select id="scToSlot" data-sccopy="toSlot" aria-label="Meal to copy to">' + slotOpts(toSlot) + '</select>' +
+    '<button class="btn" data-action="slot-copy-out" data-slot="' + id + '"' + (slotHasFood(ui.date, id) ? '' : ' disabled') + '>Copy out</button></div></div></div>';
+}
+function slotCopyRun(fromK, fromS, toKs, toS) {
+  const ids = ((state.plan[fromK] || {})[fromS] || []).slice();
+  if (!ids.length) { toast('Nothing to copy: ' + dayWord(fromK) + '\u2019s ' + SLOT_LABEL(fromS) + ' is empty.'); return; }
+  toKs = toKs.filter(k => !(k === fromK && toS === fromS));
+  if (!toKs.length) { toast('That is this same meal. Pick another day or meal.'); return; }
+  const before = JSON.stringify(state.plan);
+  for (const k of toKs) { const d = state.plan[k] || (state.plan[k] = {}); d[toS] = (d[toS] || []).concat(ids); }
+  saveState(); render();
+  const n = ids.length, what = n + ' item' + (n === 1 ? '' : 's');
+  const where = toKs.length === 1 ? (toKs[0] === ui.date ? SLOT_LABEL(toS) : dayWord(toKs[0]) + '\u2019s ' + SLOT_LABEL(toS)) : SLOT_LABEL(toS) + ' on ' + toKs.length + ' days';
+  flashMark(true, 'Copied ' + what, 'into ' + where);
+  toast('Copied ' + what + ' into ' + where + '.', () => { state.plan = JSON.parse(before); saveState(); render(); });
+}
+function slotCopyChange(t) {
+  const C = ui.slotCopyPick || (ui.slotCopyPick = {});
+  C[t.dataset.sccopy] = t.value;
 }
 
 // ---------- 5. copy a whole day onto today ----------
@@ -2573,7 +2637,9 @@ function viewPlan() {
       '<span class="muted kcal">' + (slotKcal ? n0(slotKcal) + ' kcal' : '') + '</span></div></div>' +
       // "+ Add several at once" was replaced by these two on request: scan straight into this meal on this day.
       '<div class="mlinks"><button class="link" data-action="slot-cam" data-slot="' + id + '" aria-label="Scan into ' + name + ' with the camera">\ud83d\udcf7 Camera</button>' +
-      '<button class="link" data-action="slot-kbd" data-slot="' + id + '" aria-label="Scan into ' + name + ' with a Bluetooth scanner">\u2328\ufe0e Scanner</button></div>' +
+      '<button class="link" data-action="slot-kbd" data-slot="' + id + '" aria-label="Scan into ' + name + ' with a Bluetooth scanner">\u2328\ufe0e Scanner</button>' +
+      '<button class="link" data-action="slot-copy" data-slot="' + id + '" aria-expanded="' + (ui.slotCopy === id) + '" aria-label="Quick copy for ' + name + '">\ud83d\udccb Quick copy</button></div>' +
+      (ui.slotCopy === id ? slotCopyHtml(id, name) : '') +
       (kbdSlot() === id
         ? '<div class="sc-ready"><i class="sc-dot" aria-hidden="true"></i><input id="slotKbd" class="sc-in" inputmode="none" autocomplete="off" enterkeyhint="done" placeholder="Ready: scans go to ' + name + '" aria-label="Scanner ready: scans go into ' + name + '"><button class="link" data-action="slot-kbd-done">Done</button></div>'
         : '') +
@@ -2640,7 +2706,7 @@ function viewPlan() {
     '<button class="btn" data-action="next-day" aria-label="Next day">Next \u25b6</button></div>' +
     '<div class="daynav-row"><input id="datePick" type="date" value="' + ui.date + '" aria-label="Choose a date">' +
     '<button class="btn primary" data-action="ql-scan">Scan</button></div>' +
-    '</div>' + quickLogHtml() + foodAddHtml() + auditHtml() + copyBar + copyFromBar + clipBar() + '<div class="plan"><div>' + slotsHtml + '</div>' + summary + '</div>';
+    '</div>' + quickLogHtml() + foodAddHtml() + auditHtml() + clipBar() + '<div class="plan"><div>' + slotsHtml + '</div>' + summary + '</div>';
 }
 
 // One box of the week: the meals in one slot on one day, plus a menu to add another.
@@ -4251,6 +4317,16 @@ function keyRepeat(v) {
 async function slotScanClick(a, el) {
   const slot = el && el.dataset ? el.dataset.slot : '';
   if (a === 'slot-kbd-done') { SCAN.slotMode = null; render(); return; }
+  if (a === 'slot-copy-close') { ui.slotCopy = null; render(); return; }
+  if (a === 'slot-copy') { ui.slotCopy = ui.slotCopy === slot ? null : slot; ui.slotCopyPick = {}; render(); return; }
+  if (a === 'slot-copy-in') {
+    const d = $('scFromDay'), m = $('scFromSlot'); if (!d || !m) return;
+    slotCopyRun(d.value, m.value, [ui.date], slot); return;
+  }
+  if (a === 'slot-copy-out') {
+    const d = $('scToDay'), m = $('scToSlot'); if (!d || !m || !d.value) return;
+    slotCopyRun(ui.date, slot, d.value === 'rest-of-week' ? laterDaysInWeek(ui.date) : [d.value], m.value); return;
+  }
   if (!slot || !SLOT_IDS.includes(slot)) return;
   ui.scan.slot = slot;
   if (a === 'slot-kbd') {
@@ -5629,6 +5705,7 @@ document.addEventListener('change', e => {
     state.plan[key][slot].push(t.value);
     saveState(); render();
   }
+  else if (t.dataset && t.dataset.sccopy) { slotCopyChange(t); }
   else if (t.id === 'copyTo') {
     if (t.value === 'rest-of-week') runCopy(laterDaysInWeek(ui.date).map(k => [ui.date, k]), SLOT_IDS);
     else if (t.value) runCopy([[ui.date, t.value]], SLOT_IDS);
@@ -5695,7 +5772,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.04-5';
+const APP_VERSION = '2026.10.04-6';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
