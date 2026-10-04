@@ -139,6 +139,9 @@ select[size] option { padding: 6px 8px; border-radius: 4px; }
 .datebar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 24px; }
 .datebar h2 { flex: 1 1 260px; }
 .datebar input[type="date"] { width: auto; }
+.daynav-row { display: flex; gap: 10px; align-items: center; }
+.daynav-row .btn { white-space: nowrap; }
+@media (max-width: 640px) { .daynav h2 { flex-basis: 100%; } .daynav-row { flex: 1 1 100%; } .daynav-row:first-of-type .btn { flex: 1; } .daynav-row input[type="date"] { flex: 1; min-width: 0; } }
 .plan { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 40px; margin-top: 8px; }
 .slot { padding: 18px 0; border-bottom: 1px solid var(--line); }
 .slot-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
@@ -1331,9 +1334,10 @@ function quickLogHtml() {
       '<button class="btn primary" data-action="ql-add">Add to ' + esc(parseKey(ui.date).toLocaleDateString(undefined, { weekday: 'short' })) + '</button>' +
       '<button class="btn" data-action="ql-edit">Edit details</button><button class="link" data-action="ql-dismiss">Dismiss</button></div></div>';
   }
+  if (!canAI) return card;   // Scan moved up next to the date; without Claude there is nothing else in this row
   return '<div class="quicklog">' +
     (canAI ? '<input id="qlText" data-quick="text" maxlength="300" autocomplete="off" placeholder="What did you eat? e.g. two eggs and toast" aria-label="Describe what you ate" value="' + esc(Q.text) + '"><button class="btn primary" data-action="ql-log"' + (ui.ai.busy ? ' disabled' : '') + '>Log</button>' : '') +
-    '<button class="btn" data-action="ql-scan">Scan</button></div>' + card;
+    '</div>' + card;
 }
 function qlClick(a) {
   const Q = ui.quick;
@@ -2587,12 +2591,15 @@ function viewPlan() {
     '<select id="copyDayFrom" aria-label="Copy a past day onto today"><option value="">Copy a day onto today\u2026</option>' + pastDays + '</select>' +
     '<button class="btn" data-action="copy-day-onto-today">Copy onto today</button></div>' : '';
 
-  return guideBannerHtml() + extraBannerHtml() + '<div class="datebar">' +
+  // Previous / Today / Next on one row, the date box and Scan on the next (these used to wrap onto three ragged rows
+  // on a phone, with Scan stranded on a line of its own below them).
+  return guideBannerHtml() + extraBannerHtml() + '<div class="datebar daynav">' +
     '<h2>' + label + '</h2>' +
-    '<button class="btn" data-action="prev-day" aria-label="Previous day">Previous</button>' +
-    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Choose a date">' +
-    '<button class="btn" data-action="next-day" aria-label="Next day">Next</button>' +
+    '<div class="daynav-row"><button class="btn" data-action="prev-day" aria-label="Previous day">\u25c0 Prev</button>' +
     '<button class="btn" data-action="today">Today</button>' +
+    '<button class="btn" data-action="next-day" aria-label="Next day">Next \u25b6</button></div>' +
+    '<div class="daynav-row"><input id="datePick" type="date" value="' + ui.date + '" aria-label="Choose a date">' +
+    '<button class="btn primary" data-action="ql-scan">Scan</button></div>' +
     '</div>' + quickLogHtml() + foodAddHtml() + auditHtml() + copyBar + copyFromBar + clipBar() + '<div class="plan"><div>' + slotsHtml + '</div>' + summary + '</div>';
 }
 
@@ -5552,7 +5559,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.03-15';
+const APP_VERSION = '2026.10.04-1';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
