@@ -3276,8 +3276,21 @@ function upcEtoA(e) {
 }
 // One canonical form for any barcode: 13 digits (UPC-A gets a leading 0), or 8 digits for EAN-8. null if it is not valid.
 // An 8-digit number can be UPC-E or EAN-8. Unless the scanner said "ean_8", a valid UPC-E reading wins (the US convention).
+// The last digit of an EAN/UPC code, worked out from the ones before it.
+function eanCheckDigit(body) {
+  const n = body.length + 1; let sum = 0;
+  for (let i = 0; i < n - 1; i++) { const v = +body[i]; sum += ((n - 1 - i) % 2 === 1) ? v * 3 : v; }
+  return String((10 - sum % 10) % 10);
+}
 function normalizeCode(raw, fmt) {
-  const d = String(raw || '').replace(/\D/g, '');
+  let d = String(raw || '').replace(/\D/g, '');
+  // Some Bluetooth scanners are set to leave off the last digit (the check digit), or to send a short UPC-E code (the
+  // 6-8 digit kind on cans and small bottles) without its first and last digit. Put the missing digits back.
+  if (d.length === 11) d += eanCheckDigit('0' + d);
+  else if (d.length === 6 || (d.length === 7 && /^[01]/.test(d))) {
+    const e = d.length === 6 ? '0' + d : d, a = upcEtoA(e + '0');
+    if (a) d = a.slice(0, 11) + eanCheckDigit('0' + a.slice(0, 11));
+  }
   if (d.length === 12 && eanCheckOk('0' + d)) return '0' + d;
   if (d.length === 13 && eanCheckOk(d)) return d;
   if (d.length === 8) {
@@ -3343,6 +3356,30 @@ function decodeEan8(r, s) {
   return eanCheckOk(digits) && variedDigits(digits) ? { code: digits, err } : null;
 }
 
+// UPC-E: the short, 6-digit-wide barcode on many pop bottles, cans and small packages. The reader only knew the long
+// kinds (EAN-13 / UPC-A and EAN-8), so pointing the camera at one of these did nothing at all. Its number system (0 or 1)
+// and check digit are not printed as bars; they are hidden in which of the 6 digits use the "even" pattern.
+const UPCE_PAR = ['EEEOOO', 'EEOEOO', 'EEOOEO', 'EEOOOE', 'EOEEOO', 'EOOEEO', 'EOOOEE', 'EOEOEO', 'EOEOOE', 'EOOEOE'];
+function decodeUpcE(r, s) {
+  if (s + 33 > r.length) return null;
+  let tot = 0; for (let i = 0; i < 33; i++) tot += r[s + i];
+  const m = tot / 51;
+  if (!guardsOk(r, s, [0, 1, 2, 27, 28, 29, 30, 31, 32], m)) return null;
+  // Stricter blank margins than the long codes: inside an EAN-13 no gap is ever wider than 4 bars, so this can never
+  // mistake part of a long barcode for a short one.
+  if ((s > 0 ? r[s - 1] : 0) < m * 5 || (s + 33 < r.length ? r[s + 33] : 0) < m * 5) return null;
+  let digits = '', par = '', err = 0;
+  for (let k = 0; k < 6; k++) {
+    const o = s + 3 + k * 4, e = eanDigit(r[o], r[o + 1], r[o + 2], r[o + 3], true);
+    if (!e) return null; digits += e.d; par += e.type === 'G' ? 'E' : 'O'; err += e.err;
+  }
+  let ns = 0, chk = UPCE_PAR.indexOf(par);
+  if (chk < 0) { ns = 1; chk = UPCE_PAR.indexOf(par.replace(/[EO]/g, c => c === 'E' ? 'O' : 'E')); }
+  if (chk < 0) return null;
+  const a = upcEtoA(ns + digits + chk);
+  return a && eanCheckOk('0' + a) && variedDigits(digits) ? { code: '0' + a, err } : null;
+}
+
 // Turn one row of pixels into alternating bar / space widths, starting at the first bar.
 function rowRuns(gray, w, y, sharpen) {
   const off = y * w, s = new Float32Array(w);
@@ -3373,12 +3410,12 @@ function decodeGray(gray, w, h, y0, y1, rows, sharpen) {
   for (let i = 0; i < rows; i++) {
     const y = Math.min(h - 1, Math.floor(h * (y0 + (y1 - y0) * (i + 0.5) / rows)));
     const fwd = rowRuns(gray, w, y, sharpen);
-    if (fwd.length < 43) continue;
+    if (fwd.length < 33) continue;
     for (let dir = 0; dir < 2; dir++) {                      // dir 1 = the barcode is upside down
       const runs = dir ? fwd.slice().reverse() : fwd;
       const barParity = dir ? fwd.length % 2 : 1;          // which positions in the list are bars
-      for (let s = barParity; s + 43 <= runs.length; s += 2) {
-        const d = decodeEan13(runs, s) || decodeEan8(runs, s);
+      for (let s = barParity; s + 33 <= runs.length; s += 2) {
+        const d = decodeEan13(runs, s) || decodeEan8(runs, s) || decodeUpcE(runs, s);
         if (d) { const v = votes[d.code] || (votes[d.code] = { n: 0, err: 0 }); v.n++; v.err += d.err; }
       }
     }
@@ -3730,7 +3767,12 @@ function setDefaultAmount(f) {
 }
 async function handleCode(raw, fmt, live) {
   const code = normalizeCode(raw, fmt);
-  if (!code) { ui.scan.msg = 'That number is not a valid barcode. Check the digits and try again.'; render(); return false; }
+  if (!code) {
+    ui.scan.msg = 'That number is not a valid barcode. Check the digits and try again.'; render();
+    const got = String(raw || '').trim();
+    announce(false, 'Could not read that barcode', (got ? '\u201c' + (got.length > 24 ? got.slice(0, 24) + '\u2026' : got) + '\u201d is not a barcode number. ' : '') + 'Try again, or type the digits on the Scan tab.', false);
+    return false;
+  }
   Object.assign(ui.scan, { code, typed: showCode(code), msg: '', form: null, linkQuery: '', photoFailed: false, brandSkip: '', offSkip: '' });
   let f = foodForCode(code);
   if (!f && autoOn()) {
@@ -5772,7 +5814,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.04-6';
+const APP_VERSION = '2026.10.04-7';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
