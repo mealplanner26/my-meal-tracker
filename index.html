@@ -3270,7 +3270,7 @@ const CL_KEY = 'mp-cloud-session';
 function cloudOn() { return !!(CLOUD.url && CLOUD.key) && !(typeof window !== 'undefined' && window.claude && typeof window.claude.use === 'function'); }
 function cloudSignedIn() { return !!(CL.session && CL.session.user && CL.session.user.id); }
 function cloudSave() { try { if (CL.session) localStorage.setItem(CL_KEY, JSON.stringify(CL.session)); else localStorage.removeItem(CL_KEY); } catch (e) { /* this visit only */ } }
-function cloudErr(status, msg) { const e = new Error(msg || ('HTTP ' + status)); e.status = status;
+function cloudErr(status, msg) { const e = new Error(msg || ('HTTP ' + status)); e.status = status; CL.lastErr = new Date().toISOString().slice(11, 19) + ' ' + status + ' ' + (msg || '');
   e.code = status === 401 || status === 403 ? 'revoked' : status === 429 ? 'resource_exhausted' : !status || status >= 500 ? 'unavailable' : 'failed'; return e; }
 async function cloudFetch(path, opts, auth, ms) {
   opts = opts || {};
@@ -3280,7 +3280,7 @@ async function cloudFetch(path, opts, auth, ms) {
     const h = Object.assign({ apikey: CLOUD.key, 'Content-Type': 'application/json' }, auth && CL.session ? { Authorization: 'Bearer ' + CL.session.access_token } : {}, opts.headers || {});
     const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), ms || 10000);
     try { return await fetch(CLOUD.url.replace(/\/$/, '') + '/' + path, { method: opts.method || 'GET', headers: h, body: opts.body === undefined ? undefined : JSON.stringify(opts.body), signal: ctl.signal }); }
-    catch (e) { throw cloudErr(0, 'no connection'); }
+    catch (e) { throw cloudErr(0, e && e.name === 'AbortError' ? 'timed out' : String((e && e.message) || 'no connection')); }
     finally { clearTimeout(timer); }
   };
   let res = await go();
@@ -3336,6 +3336,11 @@ async function cloudPull() {
   finally { CL.pulling = false; }
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && cloudSignedIn()) cloudPull(); });
+function cloudWhy(e, what) {
+  if (!e.status) return 'Could not ' + what + ': no answer from the sign-in service (' + CLOUD.url.replace(/^https:\/\//, '') + '). Check this phone is online, then try again. If it keeps happening, open Help \u2192 \u201cCopy support info\u201d and send it to whoever runs this site.';
+  return 'Could not ' + what + ': the sign-in service said \u201c' + String(e.message || 'error').slice(0, 160) + '\u201d (error ' + e.status + ').' +
+    (e.status >= 500 && what === 'send the email' ? ' This usually means the sign-in email itself could not be made or sent; the site owner can check the email template in Supabase.' : '');
+}
 async function cloudSendCode() {
   const email = (CL.emailIn || '').trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { CL.msg = 'Type your email address.'; render(); return; }
@@ -3343,7 +3348,7 @@ async function cloudSendCode() {
   try {
     await cloudFetch('auth/v1/otp', { method: 'POST', body: { email, create_user: true } });
     Object.assign(CL, { step: 'code', email, codeIn: '', msg: 'Sent. It can take a minute; check junk mail too.' });
-  } catch (e) { CL.msg = e.status === 429 ? 'Too many sign-in emails were sent just now. Wait a few minutes and try again.' : e.code === 'unavailable' ? 'Could not reach the sign-in service. Check your connection.' : 'Could not send the code: ' + e.message; }
+  } catch (e) { CL.msg = e.status === 429 ? 'Too many sign-in emails were sent just now. Wait a few minutes and try again.' : cloudWhy(e, 'send the email'); }
   CL.busy = false; render();
   if (CL.step === 'code') { const b = $('cloudCode'); if (b && b.focus) b.focus(); }
 }
@@ -3364,7 +3369,7 @@ async function cloudVerify() {
     if (!cloudSignedIn()) throw cloudErr(400, 'no session');
     Object.assign(CL, { step: 'idle', msg: 'Signed in. Your meals now sync between every device you sign in on.' });
     cloudStartSync();
-  } catch (e) { CL.msg = e.code === 'unavailable' ? 'Could not reach the sign-in service. Check your connection.' : (link ? 'That link did not work. Each link works once and for an hour; tap \u201cSend a new email\u201d and paste the new link without opening it.' : 'That code did not work. It may have expired; tap \u201cSend a new email\u201d.'); }
+  } catch (e) { CL.msg = !e.status || e.status >= 500 ? cloudWhy(e, 'sign in') : (link ? 'That link did not work. Each link works once and for an hour; tap \u201cSend a new email\u201d and paste the new link without opening it.' : 'That code did not work. It may have expired; tap \u201cSend a new email\u201d.'); }
   CL.busy = false; render();
 }
 // Someone tapped the link in the email instead: Supabase sends this page back with the sign-in in the address
@@ -6037,7 +6042,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.04-8';
+const APP_VERSION = '2026.10.04-9';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
@@ -6112,6 +6117,7 @@ supportInfo = function () {
   return _supportInfo() + '\nBrowser storage actually works here: ' + (SA_STORAGE_OK ? 'yes' : 'NO — nothing typed into this page will be saved') + '\nStandalone site version: ' + APP_VERSION + '\nProduct list: ' + BRAND_PACK.length + ' products' + (SA.productsMsg ? ' (' + SA.productsMsg + ')' : '') +
     '\nService worker: ' + (navigator.serviceWorker && navigator.serviceWorker.controller ? 'active' : 'not active') +
     '\nAdded to the home screen: ' + ((window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone ? 'yes' : 'no') +
+    '\nAccount sync: ' + (cloudOn() ? (cloudSignedIn() ? 'signed in' : 'not signed in') + ', ' + CLOUD.url + (CL.lastErr ? ', last error ' + CL.lastErr : '') : 'off') +
     '\nStorage protected from clean-up: ' + (SA.persisted === null ? 'not requested' : SA.persisted ? 'yes' : 'no') + '\nLast backup: ' + (state.lastBackup ? daysSince(state.lastBackup) + ' days ago' : 'none');
 };
 let SA_HOLD_CHECKS_UNTIL = 0;                                             // see justUpdated below -- 0 means no hold is active
