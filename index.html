@@ -209,6 +209,7 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .my-acts .link { font-size: 0.82rem; white-space: nowrap; }
 .acct { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0; background: var(--surface); }
 .acct h3 { margin: 0 0 6px; }
+.um-ask { font-size: 0.85rem; display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
 .q-list { list-style: none; padding: 0; margin: 8px 0 0; } .q-list li { border-top: 1px solid var(--line); padding: 8px 0; }
 .q-acts { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .acct-row { display: flex; gap: 8px; margin-top: 8px; } .acct-row input { flex: 1; min-width: 0; font-size: 16px; }
@@ -600,7 +601,7 @@ ul.my-scans li .btn { flex: 0 0 auto; }
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="brand"><h1>Meal Rotation Planner</h1><p id="syncNote" class="sync-note" role="status"></p><button class="link help-link" data-action="help-open">Help and backup</button><button class="link help-link" id="cloudQuick" data-action="cloud-open" hidden>Sign in to sync</button><button class="link help-link" id="unmatchedQuick" data-action="unmatched-export-quick" hidden></button></div>
+    <div class="brand"><h1>Meal Rotation Planner</h1><p id="syncNote" class="sync-note" role="status"></p><button class="link help-link" data-action="help-open">Help and backup</button><button class="link help-link" id="cloudQuick" data-action="cloud-open" hidden>Sign in to sync</button><button class="link help-link" id="unmatchedQuick" data-action="unmatched-export-quick" hidden></button><span id="unmatchedAsk" class="um-ask" hidden>Did it send? <button class="link" data-action="unmatched-sent-yes">Yes, clear the list</button> <button class="link" data-action="unmatched-sent-no">No, keep it</button></span></div>
     <nav class="tabs" aria-label="Sections">
       <button data-action="tab" data-tab="plan">Day</button>
       <button data-action="tab" data-tab="week">Week</button>
@@ -1257,10 +1258,10 @@ async function scanBulkSubmit() {
   const lines = ui.scanBulk.text.split('\n').map(s => s.trim()).filter(Boolean);
   if (!lines.length) { toast('Type or paste at least one barcode number, one per line.'); return; }
   ui.scanBulk.busy = true; render();
-  let added = 0; const misses = [];
+  let added = 0; const misses = [], junk = [];
   for (const raw of lines) {
     const code = normalizeCode(raw);
-    if (!code) { trackUnmatched('Barcode ' + raw.slice(0, 40) + ' (not a valid number)'); misses.push(raw); continue; }
+    if (!code) { junk.push(raw); continue; }          // a QR code, a lot number...: not a product, so not "not recognized" either
     let food = foodForCode(code);
     if (!food) {
       const rec = brandRecord(code);
@@ -1286,8 +1287,9 @@ async function scanBulkSubmit() {
   ui.scanBulk.text = ''; ui.scanBulk.open = false; ui.scanBulk.busy = false;
   saveState();
   render();
-  if (added) announce(true, added + ' added', 'to ' + SLOT_LABEL(ui.scan.slot), false); else if (misses.length) announce(false, 'Nothing added', misses.length + ' not recognized', false);
-  toast(added + ' added to ' + SLOT_LABEL(ui.scan.slot) + (misses.length ? ', ' + misses.length + ' not found (noted under Help).' : '.'));
+  if (added) announce(true, added + ' added', 'to ' + SLOT_LABEL(ui.scan.slot), false); else if (misses.length || junk.length) announce(false, 'Nothing added', (misses.length ? misses.length + ' not recognized' : '') + (misses.length && junk.length ? ' \u00b7 ' : '') + (junk.length ? junk.length + ' not product barcodes' : ''), false);
+  toast(added + ' added to ' + SLOT_LABEL(ui.scan.slot) + (misses.length ? ', ' + misses.length + ' not found (noted under Help)' : '') +
+    (junk.length ? ', ' + junk.length + ' skipped because ' + (junk.length === 1 ? 'it was' : 'they were') + ' not product barcodes (QR codes, lot numbers or store tags): ' + junk.slice(0, 3).map(j => '\u201c' + j.slice(0, 20) + '\u201d').join(', ') : '') + '.');
 }
 
 // ---------- per-meal Quick copy (Day tab) ----------
@@ -2326,7 +2328,11 @@ async function unmatchedExportSend() {
         return;
       }
     }
-  } catch (e) { if (e && e.name === 'AbortError') return; /* person backed out of the share sheet: do nothing, do not also download, and do not clear anything */ }
+  } catch (e) {
+    // iPhone reports "cancelled" both when the share sheet is closed AND after some apps (Claude, Mail, AirDrop) actually
+    // received the file -- so the list used to stay, with its "Send" button, after it had been sent. Ask instead.
+    if (e && e.name === 'AbortError') { ui.umAsk = items.length; render(); return; }
+  }
   unmatchedExportSave();
 }
 function helpParse(text, kind) {
@@ -2991,7 +2997,8 @@ function render() {
   if (aiTab) { const off = AI.status === 'unavailable'; aiTab.hidden = off; if (off && ui.tab === 'ai') ui.tab = 'plan'; }
   const cq = $('cloudQuick'); if (cq) { try { cq.hidden = !(cloudOn() && !cloudSignedIn()); } catch (e) { cq.hidden = true; } }
   const uq = $('unmatchedQuick'), un = (state.unmatched || []).length;          // one-tap shortcut next to "Help and backup", so sending unmatched foods never needs a trip into Help first
-  if (uq) { uq.hidden = !un; if (un) uq.textContent = 'Send ' + un + ' unmatched'; }
+  if (uq) { uq.hidden = !un || !!ui.umAsk; if (un) uq.textContent = 'Send ' + un + ' unmatched'; }
+  const ua = $('unmatchedAsk'); if (ua) { ua.hidden = !(ui.umAsk && un); }
   const hadKbd = !!(document.activeElement && document.activeElement.id === 'slotKbd');
   app.innerHTML = ui.fix ? fixView() : views[ui.tab]();
   if (ui.tab === 'meals') refreshPickOptions();
@@ -3627,6 +3634,18 @@ function eanCheckDigit(body) {
   for (let i = 0; i < n - 1; i++) { const v = +body[i]; sum += ((n - 1 - i) % 2 === 1) ? v * 3 : v; }
   return String((10 - sum % 10) % 10);
 }
+// A scanner reads whatever code it is pointed at: the square QR code (a web link), a lot or serial number with letters,
+// a store shelf tag. None of those is a product, so say what it was and how to get the right one, instead of
+// "not recognized" (which made it look like a food the app should know).
+function notBarcodeWhy(raw) {
+  const t = String(raw || '').trim(), digits = t.replace(/\D/g, '');
+  if (!t) return '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t) || /^www\./i.test(t) || /\.(com|de|org|net|io|co|us|ly)(\/|$)/i.test(t)) return 'That was a QR code (a web link), not the product barcode. Scan the striped barcode with numbers under it.';
+  if (/[a-z]/i.test(t)) return 'That code has letters (a lot number, serial number or shipping label), not the product barcode. Scan the striped barcode with numbers under it.';
+  if (digits.length < 6) return 'That number is too short to be a product barcode (' + digits.length + ' digits). Scan the striped barcode with 12 or 13 numbers under it.';
+  if (digits.length > 14) return 'That number is too long to be a product barcode. Scan the striped barcode with 12 or 13 numbers under it.';
+  return 'That is not a product barcode (it may be a store tag, or a misread). Try scanning the striped barcode again.';
+}
 function normalizeCode(raw, fmt) {
   let d = String(raw || '').replace(/\D/g, '');
   // Some Bluetooth scanners are set to leave off the last digit (the check digit), or to send a short UPC-E code (the
@@ -4113,9 +4132,9 @@ function setDefaultAmount(f) {
 async function handleCode(raw, fmt, live) {
   const code = normalizeCode(raw, fmt);
   if (!code) {
-    ui.scan.msg = 'That number is not a valid barcode. Check the digits and try again.'; render();
+    ui.scan.msg = notBarcodeWhy(raw) || 'That number is not a valid barcode. Check the digits and try again.'; render();
     const got = String(raw || '').trim();
-    announce(false, 'Could not read that barcode', (got ? '\u201c' + (got.length > 24 ? got.slice(0, 24) + '\u2026' : got) + '\u201d is not a barcode number. ' : '') + 'Try again, or type the digits on the Scan tab.', false);
+    announce(false, 'Not a product barcode', notBarcodeWhy(got) || 'Try again, or type the digits on the Scan tab.', false);
     return false;
   }
   Object.assign(ui.scan, { code, typed: showCode(code), msg: '', form: null, linkQuery: '', photoFailed: false, brandSkip: '', offSkip: '' });
@@ -4224,6 +4243,11 @@ function replaceFoodWithRec(id, rec, ok) {
   state.meals.forEach(m => { if (m.items.length === 1 && m.items[0].foodId === id && m.name.startsWith(old.name.slice(0, 40) + ' (')) m.name = fresh.name.slice(0, 40) + m.name.slice(old.name.slice(0, 40).length); });
   return true;
 }
+function junkCleanup() {
+  const list = state.unmatched || [], keep = list.filter(u => !/ \(not a valid number\)$/.test(u.name || ''));
+  if (keep.length !== list.length) { state.unmatched = keep; saveState(); try { render(); } catch (e) { /* starting up */ } }
+}
+setTimeout(junkCleanup, 0);
 function labelRepair() {
   let changed = 0;
   for (const [code, id] of Object.entries(state.barcodes || {})) {
@@ -6075,6 +6099,8 @@ document.addEventListener('click', e => {
   else if (a.startsWith('bulk-')) { bulkClick(a, el); }
   else if (a.startsWith('scanbulk-')) { scanBulkClick(a); }
   else if (a === 'unmatched-export' || a === 'unmatched-export-quick') unmatchedExportSend();
+  else if (a === 'unmatched-sent-yes') { const n = ui.umAsk || (state.unmatched || []).length; ui.umAsk = 0; unmatchedMarkSent(n); }
+  else if (a === 'unmatched-sent-no') { ui.umAsk = 0; render(); }
   else if (a === 'qty-inc' || a === 'qty-dec' || a === 'remove-group') { qtyClick(a, el); }
   else if (a === 'quick-add') { quickAddMeal(el.dataset.slot, el.dataset.meal); }
 
@@ -6288,7 +6314,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.05-4';
+const APP_VERSION = '2026.10.05-5';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
