@@ -204,6 +204,7 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .keep { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; font-size: 0.95rem; }
 .keep input { width: auto; }
 .slot-tools { display: flex; align-items: baseline; gap: 12px; }
+.tag-check { font-size: 0.7rem; font-weight: 700; color: #8a5a00; background: #fff1cc; border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
 .my-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: 0 0 auto; }
 .my-acts .link { font-size: 0.82rem; white-space: nowrap; }
 .acct { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0; background: var(--surface); }
@@ -1219,11 +1220,13 @@ function scanAutoAdd(f, live) {
 }
 // Bulk mode, barcode not recognized: do not stop to ask for label details (that would break the run of scans). Note it for
 // later (Help > export) and, for the live camera, keep it going the same as a successful auto-add.
-function scanAutoMiss(code, live) {
-  trackUnmatched('Barcode ' + showCode(code), code);
-  Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Not in the database yet — noted for later.' + (live ? ' Scanning the next one…' : ' Ready for the next one.') });
+function scanAutoMiss(code, live, foundName) {
+  // foundName: the product WAS found, but only with numbers that are not the manufacturer's -- so it is not logged.
+  trackUnmatched(foundName ? String(foundName).slice(0, 60) + ' (check the label)' : 'Barcode ' + showCode(code), code);
+  Object.assign(ui.scan, { code: '', typed: '', form: null, msg: (foundName ? 'Not added: ' + foundName + ' needs checking against its label once.' : 'Not in the database yet — noted for later.') + (live ? ' Scanning the next one…' : ' Ready for the next one.') });
   render();
-  announce(false, 'Not recognized \u2014 nothing added', 'Barcode ' + showCode(code) + ' \u00b7 fix it under \u201cNot recognized\u201d on the Scan tab', live);
+  if (foundName) announce(false, 'Not added \u2014 check the label first', String(foundName).slice(0, 40) + ' is not from the manufacturer \u00b7 check it under \u201cNot recognized\u201d on the Scan tab', live);
+  else announce(false, 'Not recognized \u2014 nothing added', 'Barcode ' + showCode(code) + ' \u00b7 fix it under \u201cNot recognized\u201d on the Scan tab', live);
   if (live) { const el = $('scanMsg'); if (el) el.textContent = 'Not in the database \u2014 noted for later'; resumeLive(HOLD_MS); }
 }
 
@@ -1255,6 +1258,7 @@ async function scanBulkSubmit() {
     const code = normalizeCode(raw);
     if (!code) { trackUnmatched('Barcode ' + raw.slice(0, 40) + ' (not a valid number)'); misses.push(raw); continue; }
     let food = foodForCode(code);
+    if (food && !foodTrusted(food)) { trackUnmatched(food.name.slice(0, 60) + ' (check the label)', code); misses.push(raw); continue; }
     if (!food) {
       const rec = brandRecord(code);
       if (rec) {
@@ -1265,7 +1269,7 @@ async function scanBulkSubmit() {
     }
     if (!food && !brandRecord(code)) {
       if (!(code in OFF_CACHE)) { OFF_CACHE[code] = await lookupOnline(code); if (!OFF_CACHE[code]) reportMiss(code); }
-      if (OFF_CACHE[code]) {
+      if (recTrusted(OFF_CACHE[code])) {
         food = offFood(OFF_CACHE[code]);
         if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
         state.barcodes[code] = food.id;
@@ -3037,6 +3041,7 @@ function cleanFoods(list) {
   return list.filter(f => f && isStr(f.id) && isStr(f.name) && [f.kcal, f.p, f.c, f.f].every(num))
     .map(f => {
       const o = { id: f.id, name: f.name.slice(0, 80), kcal: f.kcal, p: f.p, c: f.c, f: f.f, custom: true };
+      if (f.ok) o.ok = 1;                          // checked against the package (see foodTrusted)
       if (num(f.na)) o.na = f.na;
       if (num(f.k)) o.k = f.k;
       if (num(f.su) && f.su >= 0) o.su = f.su;
@@ -3170,7 +3175,7 @@ function applyRemote(incoming) {
       if (now) SYNC.remote[id] = canon(now);
     }
   }
-  if (changed) { persistLocal(); refreshAfterRemote(); }
+  if (changed) { persistLocal(); refreshAfterRemote(); labelRepair(); }
   if (conflict) scheduleSync();
 }
 
@@ -3187,6 +3192,7 @@ function firstConnect(incoming) {
   ids.forEach(id => { SYNC.remote[id] = canon(incoming[id]); });
   try { localStorage.setItem(flag, '1'); } catch (e) { /* ignore */ }
   SYNC.ready = true;
+  labelRepair();
   persistLocal();
   render();
   flushSync();                                                    // uploads anything the database does not have yet
@@ -3312,14 +3318,19 @@ function cloudSetSession(j) {
 }
 function cloudSignedOut(msg) {
   const uid = CL.session && CL.session.user && CL.session.user.id;
-  CL.session = null; cloudSave(); cloudStop();
+  CL.session = null; CL.owner = false; cloudSave(); cloudStop();
   if (uid) try { localStorage.removeItem('meal-planner-linked-sb-' + uid); } catch (e) { /* ignore */ }   // next sign-in here combines both sides again
   CL.step = 'idle'; CL.msg = msg || ''; setSync('off'); render();
 }
 function cloudStop() { clearInterval(CL.poll); CL.poll = null; SYNC.col = null; SYNC.ready = false; SYNC.remote = {}; clearTimeout(SYNC.timer); clearTimeout(SYNC.giveUp); }
 // Pretend to be the claude.ai database for the sync engine: doc(id).set(data) saves one document; onSnapshot gets everything.
+async function cloudCheckOwner() {
+  try { const rows = await cloudFetch('rest/v1/site_owner?select=user_id', {}, true); CL.owner = !!(rows && rows.length); } catch (e) { CL.owner = false; }
+  if (CL.owner && ui.tab === 'help') render();
+}
 function cloudStartSync() {
   cloudStop();
+  cloudCheckOwner();
   SYNC.uid = 'sb-' + CL.session.user.id;
   SYNC.col = { doc: id => ({ set: data => cloudFetch('rest/v1/user_docs?on_conflict=user_id,id', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: [{ user_id: CL.session.user.id, id, data }] }, true) }),
                onSnapshot: (cb, err) => { CL.cb = cb; CL.err = err; cloudPull(); } };
@@ -3408,6 +3419,7 @@ function accountHtml() {
   if (!cloudOn()) return '';
   let body;
   if (cloudSignedIn()) body = '<p style="margin:0">Signed in as <strong>' + esc(CL.session.user.email || '') + '</strong>. Your meals, foods and plan sync between every phone and computer where you sign in with this email.</p>' +
+    (CL.owner ? '<p class="muted small" style="margin:6px 0 0"><strong>You run this site.</strong> Products you check or fix are marked \u201cchecked\u201d on the shared list, so everyone\u2019s scans of them log in one tap.</p>' : '') +
     '<div class="ai-actions"><button class="btn" data-action="cloud-signout">Sign out</button></div>';
   else if (CL.step === 'code') body = '<p style="margin:0">We emailed <strong>' + esc(CL.email) + '</strong>. If the email shows a 6-digit code, type it here. If it only has a <strong>Log In</strong> link: <strong>press and hold</strong> the link, tap <strong>Copy Link</strong>, and paste it here. Don\u2019t tap the link itself.</p>' +
     '<div class="acct-row"><input id="cloudCode" data-cloud="codeIn" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Code or link" value="' + esc(CL.codeIn) + '" aria-label="Code or link from the email">' +
@@ -3446,17 +3458,19 @@ function foodToRec(code, f) {
 async function lookupShared(code) {
   if (!CLOUD.url || !CLOUD.key || navigator.onLine === false) return null;
   try {
-    const rows = await cloudFetch('rest/v1/shared_foods?select=rec&code=eq.' + encodeURIComponent(code), {}, false, 5000);
+    let rows;
+    try { rows = await cloudFetch('rest/v1/shared_foods?select=rec,verified&code=eq.' + encodeURIComponent(code), {}, false, 5000); }
+    catch (e) { if (e.status !== 400) throw e; rows = await cloudFetch('rest/v1/shared_foods?select=rec&code=eq.' + encodeURIComponent(code), {}, false, 5000); }   // before update 3: no "verified" yet
     const rec = rows && rows[0] && rows[0].rec;
     if (!validRec(rec)) return null;
-    const r = rec.slice(); r[0] = code; r[2] = 'shared by someone using this site'; r.src = 'shared';
+    const r = rec.slice(); r[0] = code; r[2] = 'shared by someone using this site'; r.src = 'shared'; r.verified = !!rows[0].verified;
     return r;
   } catch (e) { return null; }
 }
 // A fix made while signed in replaces that product on the shared list (needs the "fix" rule from supabase-update-2.sql).
 function cloudFixShared(codes, food) {
   if (!cloudSignedIn() || !codes.length) return false;
-  const rows = codes.map(code => ({ code, rec: foodToRec(code, food) })).filter(r => r.rec);
+  const rows = codes.map(code => Object.assign({ code, rec: foodToRec(code, food) }, CL.owner ? { verified: true } : {})).filter(r => r.rec);
   if (!rows.length) return false;
   cloudFetch('rest/v1/shared_foods?on_conflict=code', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: rows }, true)
     .then(() => { let sent = {}; try { sent = JSON.parse(localStorage.getItem('mp-shared-sent') || '{}') || {}; } catch (e) { sent = {}; } rows.forEach(r => { sent[r.code] = 1; }); try { localStorage.setItem('mp-shared-sent', JSON.stringify(sent)); } catch (e) { /* fine */ } })
@@ -3469,14 +3483,14 @@ async function cloudShareNew() {
   let sent = {}; try { sent = JSON.parse(localStorage.getItem('mp-shared-sent') || '{}') || {}; } catch (e) { sent = {}; }
   const fm = foodMap(), out = [];
   for (const [code, id] of Object.entries(state.barcodes || {})) {
-    if (sent[code] || brandRecord(code) || /^custom-shared-/.test(id)) continue;       // the built-in list and the shared list already have these
+    if (sent[code] || brandRecord(code) || /^custom-shared-/.test(id) || !foodTrusted(fm[id])) continue;   // already there, or not checked: never spread unchecked numbers
     const rec = foodToRec(code, fm[id]);
-    if (rec) out.push({ code, rec });
+    if (rec) out.push(Object.assign({ code, rec }, CL.owner ? { verified: true } : {}));
     if (out.length >= 50) break;
   }
   if (!out.length) return;
   try {
-    await cloudFetch('rest/v1/shared_foods', { method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: out }, true);
+    await cloudFetch('rest/v1/shared_foods' + (CL.owner ? '?on_conflict=code' : ''), { method: 'POST', headers: { Prefer: (CL.owner ? 'resolution=merge-duplicates' : 'resolution=ignore-duplicates') + ',return=minimal' }, body: out }, true);
     out.forEach(x => { sent[x.code] = 1; });
     try { localStorage.setItem('mp-shared-sent', JSON.stringify(sent)); } catch (e) { /* will try again; duplicates are ignored */ }
   } catch (e) { /* not important enough to bother anyone about; it tries again after the next save */ }
@@ -4040,11 +4054,12 @@ async function handleCode(raw, fmt, live) {
       if (ui.scan.code !== code) return true;      // the person moved on to a different barcode while this was in flight
       OFF_CACHE[code] = rec;
       ui.scan.msg = '';
-      if (!f && autoOn() && rec) { f = offFood(rec); if (!state.customFoods.some(x => x.id === f.id)) state.customFoods.push(f); state.barcodes[code] = f.id; }
+      if (!f && autoOn() && recTrusted(rec)) { f = offFood(rec); if (!state.customFoods.some(x => x.id === f.id)) state.customFoods.push(f); state.barcodes[code] = f.id; }
     }
   }
+  if (f && autoOn() && !foodTrusted(f)) { setDefaultAmount(f); scanAutoMiss(code, live, f.name); return true; }
   if (f) { setDefaultAmount(f); if (autoOn() && scanAutoAdd(f, live)) return true; }
-  else if (autoOn()) { scanAutoMiss(code, live); return true; }
+  else if (autoOn()) { const r0 = OFF_CACHE[code]; scanAutoMiss(code, live, r0 ? r0[1] : ''); return true; }
   render();
   return true;
 }
@@ -4094,7 +4109,35 @@ const BRAND_BY_CODE = {};
 BRAND_PACK.forEach(r => { BRAND_BY_CODE[r[0]] = r; });
 const BRAND_STALE_MONTHS = 24;
 const brandKey = code => String(code || '').replace(/\D/g, '').replace(/^0+/, '');       // UPC-A, EAN-13 and GTIN-14 are the same number padded with zeros
-const brandRecord = code => BRAND_BY_CODE[brandKey(code)] || null;
+// Products the site owner photographed: the numbers typed from the actual package label, checked against each other.
+// They win over the USDA list, which is sometimes wrong (the So Delicious 24 oz vanilla yogurt there was ~323 kcal a
+// serving; its label says 150). Same 21-field, per-100 g form as BRAND_PACK; field 18 is the month the label was read.
+const LABEL_PACK = [["72904000035", "Meyenberg Whole Goat Milk (1 qt carton)", "Meyenberg", 240, "ml", 58.33, 3.333, 4.583, 2.917, 47.9, 4.583, 0.0, 1.667, 10.42, 175.0, 125.0, 0.0, 1.25, "2026-10", "1 cup", 0], ["744473000319", "So Delicious Vanilla Coconut Milk Yogurt (24 oz tub)", "So Delicious", 170, "g", 88.24, 0.294, 14.706, 2.941, 20.6, 10.0, 1.176, 2.353, 0.0, 0.0, 135.3, 0.176, 1.235, "2026-10", "3/4 cup", 0]];
+const LABEL_BY_CODE = {};
+LABEL_PACK.forEach(r => { r.label = true; LABEL_BY_CODE[r[0]] = r; });
+const brandRecord = code => LABEL_BY_CODE[brandKey(code)] || BRAND_BY_CODE[brandKey(code)] || null;
+// A product already saved on this device with other numbers (from the USDA list, Open Food Facts, anywhere) is
+// corrected in place to the label: same food, so every day it was logged on is corrected too; a serving logged at a
+// different size becomes the label's serving. Runs at start-up and whenever synced data arrives. Changes nothing twice.
+function labelRepair() {
+  const fm = foodMap(); let changed = 0;
+  for (const [code, id] of Object.entries(state.barcodes || {})) {
+    const rec = LABEL_BY_CODE[brandKey(code)]; if (!rec) continue;
+    const i = state.customFoods.findIndex(f => f.id === id); if (i < 0) continue;
+    const old = state.customFoods[i], fresh = brandFood(rec); fresh.id = id; fresh.ok = 1;
+    const same = ['kcal', 'p', 'c', 'f', 'na', 'k', 'su', 'fib', 'sat', 'cho'].every(k => old[k] === fresh[k]) && old.name === fresh.name && !!old.ok && (old.serving || {}).grams === fresh.serving.grams;
+    if (same) continue;
+    const oldG = old.serving && old.serving.grams > 0 ? old.serving.grams : null, newG = fresh.serving.grams;
+    state.customFoods[i] = fresh; changed++;
+    state.meals.forEach(m => m.items.forEach(it => {
+      if (it.foodId === id && oldG && oldG !== newG && it.unit !== 'g' && Math.abs((it.gpu || 0) - oldG) < 0.01) { it.gpu = newG; it.grams = (Number(it.qty) || 1) * newG; }
+    }));
+    state.meals.forEach(m => { if (m.items.length === 1 && m.items[0].foodId === id && m.name.startsWith(old.name.slice(0, 40) + ' (')) m.name = fresh.name.slice(0, 40) + m.name.slice(old.name.slice(0, 40).length); });
+  }
+  if (changed) { saveState(); try { render(); } catch (e) { /* still starting up */ } }
+  return changed;
+}
+setTimeout(labelRepair, 0);
 const brandDate = rec => { const [y, m] = rec[18].split('-').map(Number); return new Date(y, m - 1, 1); };
 const brandMonthsOld = (rec, now) => { const d = brandDate(rec), n = now || new Date(); return (n.getFullYear() - d.getFullYear()) * 12 + (n.getMonth() - d.getMonth()); };
 const brandDateText = rec => brandDate(rec).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
@@ -4116,8 +4159,15 @@ function brandFood(rec) {
    This is the one place the app talks to another website. It sends only the barcode number (nothing about you or
    your food log) to a free, public, crowd-sourced product database, and only when a scan is not already known on
    this device and not in the built-in USDA list. See the README and Help for the privacy trade-off this is. */
+// "Only trust manufacturer data" (the site owner's choice): a scan is logged automatically only when its numbers are
+// the manufacturer's (the USDA branded data, built in or live), typed from the package by you, or checked against the
+// package by the site owner. Numbers from Open Food Facts or from someone else's unchecked entry are NOT logged; they go
+// to "Not recognized" with a "Check it against my label" form already filled in, so fixing one takes a few seconds.
+const UNTRUSTED_ID = /^custom-(off|shared)-/;
+function foodTrusted(f) { return !!f && (!UNTRUSTED_ID.test(f.id) || !!f.ok); }
+function recTrusted(rec) { return !!rec && (rec.src === 'usda' || (rec.src === 'shared' && !!rec.verified)); }
 const OFF_CACHE = {};        // code -> a BRAND_PACK-shaped record, or null once a lookup has come back with nothing usable
-function offFood(rec) { const food = brandFood(rec); food.id = 'custom-' + (rec.src === 'usda' ? 'usda' : rec.src === 'shared' ? 'shared' : 'off') + '-' + rec[0]; return food; }
+function offFood(rec) { const food = brandFood(rec); food.id = 'custom-' + (rec.src === 'usda' ? 'usda' : rec.src === 'shared' ? 'shared' : 'off') + '-' + rec[0]; if (rec.src === 'shared' && rec.verified) food.ok = 1; return food; }
 const srcName = rec => rec && rec.src === 'usda' ? 'the USDA food database' : rec && rec.src === 'shared' ? 'foods people using this site have added' : 'Open Food Facts';
 /* ---------- USDA FoodData Central, live: the full branded-foods database ----------
    The built-in list is a 770-product slice of this; the live database has hundreds of thousands of US products, with
@@ -4230,11 +4280,14 @@ function offCardHtml(rec) {
     (rec.src === 'usda'
       ? '<p class="muted small" style="margin:0">Found in the USDA branded foods database (' + esc(rec[2]) + '), as reported by the manufacturer. Data from <strong>' + esc(brandDateText(rec)) + '</strong>.</p>'
       : rec.src === 'shared'
-      ? '<p class="muted small" style="margin:0">Added by someone else using this site, from their package.</p><div class="sv-warn"><strong>Typed in by another person, not checked by the manufacturer.</strong> Check it against your package the first time.</div>'
+      ? (rec.verified ? '<p class="muted small" style="margin:0">From this site\u2019s shared list: <strong>checked against the package</strong> by the site owner.</p>' : '<p class="muted small" style="margin:0">Added by another person using this site, from their package. Not checked yet.</p>')
       : '<p class="muted small" style="margin:0">Found on Open Food Facts (' + esc(rec[2]) + '), a free, crowd-sourced product database.</p>' +
-        '<div class="sv-warn"><strong>This comes from other people\u2019s scans, not the manufacturer.</strong> Check it against your package the first time.</div>') +
+        '') +
     '<p style="margin:8px 0 0"><strong>' + esc(rec[19] || '1 serving') + ' (' + fmtG(rec[3]) + ' ' + (rec[4] === 'ml' ? 'mL' : 'g') + ')</strong>: ' + n0(srv(5)) + ' kcal, ' + n0(srv(6)) + ' g protein, ' + n0(srv(7)) + ' g carbs, ' + n0(srv(8)) + ' g fat; ' + esc(extra) + '.</p>' +
-    '<div class="ai-actions"><button class="btn primary big" data-action="scan-off-use">Use this product</button><button class="btn" data-action="scan-off-skip">This is not my package</button></div>' +
+    (recTrusted(rec)
+      ? '<div class="ai-actions"><button class="btn primary big" data-action="scan-off-use">Use this product</button><button class="btn" data-action="scan-off-skip">This is not my package</button></div>'
+      : '<div class="sv-warn"><strong>Not added: these are not the manufacturer\u2019s numbers.</strong> Check them against your package once; after that it logs in one tap, for everyone.</div>' +
+        '<div class="ai-actions"><button class="btn primary big" data-action="scan-off-check">Check it against my label</button><button class="btn" data-action="scan-off-skip">This is not my package</button></div>') +
     '<p style="margin:6px 0 0"><button class="link" data-action="report" data-kind="brand">Report a wrong number</button></p>' +
     '<p class="muted small" style="margin:8px 0 0">' + (rec.src === 'usda' ? 'Source: USDA FoodData Central, Branded Foods (public domain), looked up live. Check it against your package the first time.' : rec.src === 'shared' ? 'Source: this site\u2019s shared product list.' : 'Source: Open Food Facts (openfoodfacts.org) \u2014 a free, crowd-sourced public database, not the USDA list and not checked by me or by Anthropic.') + '</p></article>';
 }
@@ -4248,6 +4301,11 @@ async function checkOffInBackground(code, slot) {
   OFF_CACHE[code] = rec;
   if (!rec) reportMiss(code);
   if (!rec || foodForCode(code)) return;
+  if (!recTrusted(rec)) {                       // found, but not the manufacturer's numbers: say so, and leave it for a label check
+    const u = (state.unmatched || []).find(x => x.barcode === code);
+    if (u && /^Barcode /.test(u.name)) { u.name = String(rec[1]).slice(0, 60) + ' (check the label)'; saveState(); render(); }
+    return;
+  }
   const food = offFood(rec);
   if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
   state.barcodes[code] = food.id;
@@ -4277,17 +4335,18 @@ function scanUseOff() {
   toast('Saved "' + food.name + '". Scanning it again will find it instantly.');
 }
 function brandCardHtml(rec) {
-  const per = rec[3] / 100, srv = x => rec[x] == null ? null : rec[x] * per, old = brandMonthsOld(rec) > BRAND_STALE_MONTHS;
+  const per = rec[3] / 100, srv = x => rec[x] == null ? null : rec[x] * per, old = !rec.label && brandMonthsOld(rec) > BRAND_STALE_MONTHS;
   const extra = [srv(9) != null ? n0(srv(9)) + ' mg sodium' : 'sodium not listed', srv(14) != null ? n0(srv(14)) + ' mg potassium' : 'potassium not listed'].join(', ');
   return '<article class="ai-card brand-card"><h3>' + esc(rec[1]) + '</h3>' +
-    '<p class="muted small" style="margin:0">Found in the USDA branded list (' + esc(rec[2]) + '). Data from <strong>' + esc(brandDateText(rec)) + '</strong>.</p>' +
+    (rec.label ? '<p class="muted small" style="margin:0"><strong>Checked against the package label</strong> (' + esc(rec[2]) + ', ' + esc(brandDateText(rec)) + ').</p>'
+      : '<p class="muted small" style="margin:0">Found in the USDA branded list (' + esc(rec[2]) + '). Data from <strong>' + esc(brandDateText(rec)) + '</strong>.</p>') +
     (old ? '<div class="sv-warn"><strong>This entry is over two years old.</strong> The recipe or label may have changed. Compare it with your package before you rely on it.</div>' : '') +
     (rec[20] ? '<div class="sv-warn"><strong>The data marks this product as discontinued.</strong> Check your package.</div>' : '') +
     '<p style="margin:8px 0 0"><strong>' + esc(rec[19] || '1 serving') + ' (' + fmtG(rec[3]) + ' ' + (rec[4] === 'ml' ? 'mL' : 'g') + ')</strong>: ' + n0(srv(5)) + ' kcal, ' + n0(srv(6)) + ' g protein, ' + n0(srv(7)) + ' g carbs, ' + n0(srv(8)) + ' g fat; ' + esc(extra) + '.</p>' +
     (rec[4] === 'ml' ? '<p class="muted small" style="margin:4px 0 0">Listed in mL. The app counts 1 mL as 1 g.</p>' : '') +
     '<div class="ai-actions"><button class="btn primary big" data-action="scan-brand-use">Use this product</button><button class="btn" data-action="scan-brand-skip">This is not my package</button></div>' +
     '<p style="margin:6px 0 0"><button class="link" data-action="report" data-kind="brand">Report a wrong number</button></p>' +
-    '<p class="muted small" style="margin:8px 0 0">These are the numbers the manufacturer reported to the USDA, not a photo of your label. Check them against your package the first time. Source: USDA FoodData Central, Branded Foods (public domain).</p></article>';
+    '<p class="muted small" style="margin:8px 0 0">' + (rec.label ? 'Typed from a photo of this product\u2019s Nutrition Facts by the person who runs this site, and checked against itself (calories match the protein, carbs and fat).' : 'These are the numbers the manufacturer reported to the USDA, not a photo of your label. Check them against your package the first time. Source: USDA FoodData Central, Branded Foods (public domain).') + '</p></article>';
 }
 function scanUseBrand() {
   const rec = brandRecord(ui.scan.code);
@@ -4366,6 +4425,7 @@ function fixSave() {
   const bad = labelHardCheck(F);
   if (bad) { toast(bad); return; }
   const old = foodMap()[X.id], fresh = labelToFood(F);
+  fresh.ok = 1;                                   // checked against the package by the person who fixed it
   const before = JSON.stringify({ foods: state.customFoods, meals: state.meals, barcodes: state.barcodes });
   const i = state.customFoods.findIndex(x => x.id === X.id);
   if (i >= 0) { fresh.id = X.id; state.customFoods[i] = fresh; }        // same food: everything logged with it follows
@@ -4403,6 +4463,7 @@ function scanSaveForm() {
   const food = labelToFood(F);
   state.customFoods.push(food);
   state.barcodes[ui.scan.code] = food.id; clearUnmatched(ui.scan.code);
+  cloudFixShared([ui.scan.code], food);          // signed in: your label numbers go to the shared list (checked, if you run the site)
   saveState();
   const pick = ['basis', 'servingLabel', 'servingG', 'kcal', 'p', 'c', 'f', 'na', 'k', 'su', 'fib', 'sat', 'cho', 'vd', 'ca', 'fe', 'state'].filter(k => F[k] !== '' && F[k] != null).map(k => k + '=' + F[k]).join('; ');
   sendReport('Label entered', showCode(ui.scan.code), name, pick);
@@ -4487,7 +4548,7 @@ function foodSlotGroups() {
 }
 function myScanRow(e) {
   const f = e.food, sv = f.serving && f.serving.grams > 0 ? f.serving : null, kc = Math.round((f.kcal || 0) * (sv ? sv.grams : 100) / 100);
-  return '<li><span><strong>' + esc(f.name) + '</strong><br><span class="muted small">' + esc(sv ? (sv.label || 'serving') : '100 g') + ' \u00b7 ' + kc + ' kcal \u00b7 barcode ' + esc(showCode(e.codes[0])) + (e.codes.length > 1 ? ' (+' + (e.codes.length - 1) + ')' : '') + '</span></span>' +
+  return '<li><span><strong>' + esc(f.name) + '</strong>' + (foodTrusted(f) ? '' : ' <span class="tag-check">not checked</span>') + '<br><span class="muted small">' + esc(sv ? (sv.label || 'serving') : '100 g') + ' \u00b7 ' + kc + ' kcal \u00b7 barcode ' + esc(showCode(e.codes[0])) + (e.codes.length > 1 ? ' (+' + (e.codes.length - 1) + ')' : '') + '</span></span>' +
     '<span class="my-acts"><button class="btn" data-action="scan-mylog" data-id="' + esc(f.id) + '" aria-label="Log ' + esc(f.name) + '">+ Log</button><button class="link" data-action="fix-open" data-id="' + esc(f.id) + '" aria-label="Fix the numbers for ' + esc(f.name) + '">Fix numbers</button></span></li>';
 }
 function myScansListHtml() {
@@ -4527,6 +4588,7 @@ function myScansHtml(dayLabel) {
 }
 function myScanLog(id) {
   const f = foodMap()[id]; if (!f) return;
+  if (!foodTrusted(f)) { fixOpen(id); toast('Check this one against its label first; after that it logs in one tap.'); return; }
   const hasServing = !!(f.serving && f.serving.grams > 0);
   const r = logFood(f, hasServing ? 1 : 100, hasServing ? 1 : 0, ui.scan.slot);
   if (!r) return;
@@ -4575,7 +4637,7 @@ async function checkAllUnmatched() {
     if (foodForCode(code)) { clearUnmatched(code); found++; continue; }
     let rec = brandRecord(code), food = null;
     if (rec) food = brandFood(rec);
-    else { delete OFF_CACHE[code]; rec = await lookupOnline(code); OFF_CACHE[code] = rec; if (rec) food = offFood(rec); }
+    else { delete OFF_CACHE[code]; rec = await lookupOnline(code); OFF_CACHE[code] = rec; if (recTrusted(rec)) food = offFood(rec); }
     if (food) {
       if (!state.customFoods.some(x => x.id === food.id)) state.customFoods.push(food);
       state.barcodes[code] = food.id; clearUnmatched(code); found++;
@@ -4607,7 +4669,7 @@ function viewScan() {
         '<div class="ai-actions"><button class="btn primary big" data-action="scan-add">Add to ' + esc(label) + '</button></div></article>';
     } else if (brandRecord(S.code) && S.brandSkip !== S.code) {
       result += brandCardHtml(brandRecord(S.code));
-    } else if (OFF_CACHE[S.code] && S.offSkip !== S.code) {
+    } else if (OFF_CACHE[S.code] && S.offSkip !== S.code && !S.form) {     // once "Check it against my label" is tapped, the form below takes over
       result += offCardHtml(OFF_CACHE[S.code]);
     } else {
       result += '<article class="ai-card"><h3>New product</h3><p class="muted" style="margin:0">This barcode is not linked to a food yet. Set it up once and every future scan is instant.</p>' +
@@ -4715,6 +4777,12 @@ function scanClick(a, el) {
   else if (a === 'scan-brand-use') scanUseBrand();
   else if (a === 'scan-brand-skip') { ui.scan.brandSkip = ui.scan.code; render(); }
   else if (a === 'scan-off-use') scanUseOff();
+  else if (a === 'scan-off-check') {
+    const rec = OFF_CACHE[ui.scan.code]; if (!rec) return;
+    ui.scan.form = foodToForm(offFood(rec));
+    ui.scan.form.note = 'Already filled in from ' + srcName(rec) + '. Compare every number with your package\u2019s Nutrition Facts (same column as the serving size), fix any that differ, then save.';
+    render(); const el = $('scanF-kcal'); try { if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' }); } catch (e) { /* harmless */ }
+  }
   else if (a === 'scan-off-skip') { ui.scan.offSkip = ui.scan.code; render(); }
   else if (a === 'scan-lookup') {
     const v = ui.scan.typed.trim();
@@ -6131,7 +6199,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.05-1';
+const APP_VERSION = '2026.10.05-3';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
