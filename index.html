@@ -204,6 +204,8 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .keep { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; font-size: 0.95rem; }
 .keep input { width: auto; }
 .slot-tools { display: flex; align-items: baseline; gap: 12px; }
+.my-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: 0 0 auto; }
+.my-acts .link { font-size: 0.82rem; white-space: nowrap; }
 .acct { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0; background: var(--surface); }
 .acct h3 { margin: 0 0 6px; }
 .acct-row { display: flex; gap: 8px; margin-top: 8px; } .acct-row input { flex: 1; min-width: 0; font-size: 16px; }
@@ -2630,6 +2632,8 @@ function viewPlan() {
         '<button class="link" data-action="facts-toggle" data-key="' + esc(ui.date + '|' + id + '|' + meal.id) + '" aria-expanded="' + !!ui.facts[ui.date + '|' + id + '|' + meal.id] + '" aria-label="Nutrition facts for ' + esc(meal.name) + '">Facts</button>' +
         '<button class="link" data-action="repeat-entry" data-date="' + esc(ui.date) + '" data-slot="' + esc(id) + '" data-meal="' + esc(meal.id) + '" aria-label="Log ' + esc(meal.name) + ' again">Log again</button>' +
         '<button class="link" data-action="copy-meal" data-meal="' + esc(meal.id) + '" aria-label="Copy ' + esc(meal.name) + '">Copy</button>' +
+        // A scanned or label-entered food logged on its own: its numbers can be fixed right here.
+        (meal.items.length === 1 && /^custom-/.test(meal.items[0].foodId) && foodMap()[meal.items[0].foodId] ? '<button class="link" data-action="fix-open" data-id="' + esc(meal.items[0].foodId) + '" aria-label="Fix the numbers for ' + esc(meal.name) + '">Fix</button>' : '') +
         '<button class="link danger" data-action="remove-group" data-date="' + ui.date + '" data-slot="' + id + '" data-id="' + esc(meal.id) + '" aria-label="Remove ' + esc(meal.name) + ' from ' + name + '">Remove</button></span></div></li>' + factsRowHtml(ui.date, id, meal, g.n);
     }).join('');
     const options = slotOptionsHtml(id);
@@ -2981,7 +2985,7 @@ function render() {
   const uq = $('unmatchedQuick'), un = (state.unmatched || []).length;          // one-tap shortcut next to "Help and backup", so sending unmatched foods never needs a trip into Help first
   if (uq) { uq.hidden = !un; if (un) uq.textContent = 'Send ' + un + ' unmatched'; }
   const hadKbd = !!(document.activeElement && document.activeElement.id === 'slotKbd');
-  app.innerHTML = views[ui.tab]();
+  app.innerHTML = ui.fix ? fixView() : views[ui.tab]();
   if (ui.tab === 'meals') refreshPickOptions();
   if (ui.tab === 'scan') refreshLinkOptions();
   try { if (ui.tab === 'scan' && SCAN.keepTyping) { const b = $('scanCode'); if (b && b.focus) b.focus(); } } catch (e) { /* SCAN not set up yet during start-up */ }
@@ -3415,6 +3419,7 @@ function accountHtml() {
   return '<section class="acct" id="acct" aria-label="Your account"><h3>Your account</h3>' + body + (CL.msg ? '<p class="ai-note" role="status" style="margin:8px 0 0">' + esc(CL.msg) + '</p>' : '') +
     '<p class="muted small" style="margin:8px 0 0">While you are signed in, products you teach the app (a barcode with its name and label numbers) are added to a shared list, so anyone using this site finds them on their first scan. Your food log, meals, plan, weight and details are never shared.</p></section>';
 }
+document.addEventListener('click', e => { const t = e.target && e.target.closest && e.target.closest('.tabs button'); if (t && ui.fix) { ui.scan.form = ui.fix.prevForm; ui.fix = null; } }, true);
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !e.target) return;
   if (e.target.id === 'cloudEmail') { e.preventDefault(); cloudSendCode(); }
@@ -3447,6 +3452,16 @@ async function lookupShared(code) {
     const r = rec.slice(); r[0] = code; r[2] = 'shared by someone using this site'; r.src = 'shared';
     return r;
   } catch (e) { return null; }
+}
+// A fix made while signed in replaces that product on the shared list (needs the "fix" rule from supabase-update-2.sql).
+function cloudFixShared(codes, food) {
+  if (!cloudSignedIn() || !codes.length) return false;
+  const rows = codes.map(code => ({ code, rec: foodToRec(code, food) })).filter(r => r.rec);
+  if (!rows.length) return false;
+  cloudFetch('rest/v1/shared_foods?on_conflict=code', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: rows }, true)
+    .then(() => { let sent = {}; try { sent = JSON.parse(localStorage.getItem('mp-shared-sent') || '{}') || {}; } catch (e) { sent = {}; } rows.forEach(r => { sent[r.code] = 1; }); try { localStorage.setItem('mp-shared-sent', JSON.stringify(sent)); } catch (e) { /* fine */ } })
+    .catch(() => { /* the fix still applies on your own devices */ });
+  return true;
 }
 function cloudShareSoon() { if (cloudSignedIn()) { clearTimeout(CL.shareTimer); CL.shareTimer = setTimeout(cloudShareNew, 1500); } }
 async function cloudShareNew() {
@@ -4181,7 +4196,7 @@ async function lookupOpenFoodFacts(code) {
   try {
     const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 5000);
     let res;
-    try { res = await fetch('https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(code) + '.json?fields=product_name,product_name_en,brands,serving_size,nutriments', { signal: ctl.signal }); }
+    try { res = await fetch('https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(code) + '.json?fields=product_name,product_name_en,brands,serving_size,serving_quantity,serving_quantity_unit,nutriments', { signal: ctl.signal }); }
     finally { clearTimeout(timer); }
     if (!res.ok) return null;
     const j = await res.json();
@@ -4194,11 +4209,16 @@ async function lookupOpenFoodFacts(code) {
     // found" -- showing a half-blank nutrition card would look authoritative while quietly being wrong.
     if (!name || kcal == null || prot == null || carb == null || fat == null) return null;
     const mg = x => x == null ? null : x * 1000;                      // Open Food Facts reports these in grams per 100g; the app wants mg
-    let grams = 100, label = '100 g';
-    const sizeMatch = /(\d+(?:\.\d+)?)\s*g\b/i.exec(p.serving_size || '');
-    if (sizeMatch) { grams = parseFloat(sizeMatch[1]); label = String(p.serving_size || '1 serving').slice(0, 30); }
+    let grams = 100, label = '100 g', unit = 'g';
+    // The serving as a number (Open Food Facts works it out from the label), else read from the text: "1 bottle (591 ml)",
+    // "2 cookies (30 g)". mL counts as grams, the same as everywhere else in the app.
+    const sq = Number(p.serving_quantity), squ = String(p.serving_quantity_unit || '').toLowerCase();
+    const sizeMatch = /(\d+(?:\.\d+)?)\s*(g|ml)\b/i.exec(p.serving_size || '');
+    if (sq > 0 && sq < 5000 && (!squ || squ === 'g' || squ === 'ml')) { grams = sq; unit = squ === 'ml' || (!squ && sizeMatch && /ml/i.test(sizeMatch[2])) ? 'ml' : 'g'; }
+    else if (sizeMatch) { grams = parseFloat(sizeMatch[1]); unit = sizeMatch[2].toLowerCase(); }
+    if (grams !== 100 || sizeMatch) label = String(p.serving_size || '1 serving').slice(0, 30);
     const brand = ((p.brands || '').split(',')[0] || 'Open Food Facts').trim() || 'Open Food Facts';
-    return [code, name.slice(0, 80), brand, grams, 'g', kcal, prot, carb, fat, mg(n.sodium_100g), n.sugars_100g, n.fiber_100g,
+    return [code, name.slice(0, 80), brand, grams, unit, kcal, prot, carb, fat, mg(n.sodium_100g), n.sugars_100g, n.fiber_100g,
       n['saturated-fat_100g'], mg(n.cholesterol_100g), mg(n.potassium_100g), mg(n.calcium_100g), mg(n.iron_100g), n['vitamin-d_100g'],
       new Date().toISOString().slice(0, 7), label, 0];
   } catch (e) { return null; }                                        // offline, blocked, timed out, or malformed JSON -- same as "not found"
@@ -4305,6 +4325,71 @@ function scanAddToPlan() {
   toast('Added ' + r.food + ' to ' + SLOT_LABEL(slot) + '.', () => undoAdded(id));
 }
 
+// Fixing a food whose numbers are wrong (a crowd-sourced entry, a serving read as 100 g, a typo). The same form as
+// teaching a new product, already filled in. Saving keeps the food's identity, so every day it was logged on is
+// corrected too, and -- when signed in -- the shared list gets the corrected numbers for everyone's next scan.
+function foodToForm(f) {
+  const F = blankForm(), sv = f.serving && f.serving.grams > 0 ? f.serving : null, k = sv ? sv.grams / 100 : 1;
+  const v = (x, dp) => x == null || !isFinite(x) ? '' : String(Math.round(x * k * Math.pow(10, dp)) / Math.pow(10, dp));
+  const mn = key => Array.isArray(f.mn) ? f.mn[MN_KEYS.indexOf(key)] : null;
+  Object.assign(F, { name: f.name, basis: sv ? 'serving' : '100g', servingLabel: sv ? sv.label : '', servingG: sv ? String(sv.grams) : '',
+    kcal: v(f.kcal, 0), p: v(f.p, 1), c: v(f.c, 1), f: v(f.f, 1), na: v(f.na, 0), k: v(f.k, 0), su: v(f.su, 1), fib: v(f.fib, 1), sat: v(f.sat, 1), cho: v(f.cho, 0),
+    vd: v(mn('vd'), 1), ca: v(mn('ca'), 0), fe: v(mn('fe'), 1) });
+  return F;
+}
+function fixOpen(id) {
+  const f = foodMap()[id];
+  if (!f) return;
+  ui.fix = { id, codes: Object.keys(state.barcodes || {}).filter(c => state.barcodes[c] === id), prevForm: ui.scan.form, back: ui.tab, y: window.scrollY || 0 };
+  ui.scan.form = foodToForm(f);
+  ui.scan.form.note = 'Copy the numbers from the package\u2019s Nutrition Facts, from the same column as the serving size. Every day this was logged on is corrected too.';
+  render(); try { window.scrollTo(0, 0); } catch (e) { /* harmless */ }
+}
+function fixClose() {
+  const X = ui.fix; if (!X) return;
+  ui.scan.form = X.prevForm; ui.fix = null; render();
+  try { window.scrollTo(0, X.y || 0); } catch (e) { /* harmless */ }
+}
+function fixView() {
+  const f = foodMap()[ui.fix.id];
+  if (!f) { ui.fix = null; return VIEWS[ui.tab](); }
+  return '<div class="fixview"><div class="datebar"><h2>Fix numbers</h2><button class="btn" data-action="fix-cancel">Cancel</button></div>' +
+    '<p class="muted small" style="margin:4px 0 0">' + esc(f.name) + (ui.fix.codes.length ? ' \u00b7 barcode ' + esc(showCode(ui.fix.codes[0])) : '') + ' \u00b7 now ' + esc(foodSource(f)) + '</p>' +
+    formHtml(ui.scan.form, { save: 'fix-save', cancel: 'fix-cancel', saveLabel: 'Save the fixed numbers' }) + '</div>';
+}
+function fixSave() {
+  const X = ui.fix, F = ui.scan.form, n = k => parseFloat(F[k]);
+  if (!X || !F) return;
+  if (!F.name.trim()) { toast('Give the product a name.'); return; }
+  if (!(n('kcal') >= 0)) { toast('Enter the calories from the label.'); return; }
+  if (F.basis === 'serving' && !(n('servingG') > 0)) { toast('Enter the serving size in grams (it is printed next to the serving size).'); return; }
+  const bad = labelHardCheck(F);
+  if (bad) { toast(bad); return; }
+  const old = foodMap()[X.id], fresh = labelToFood(F);
+  const before = JSON.stringify({ foods: state.customFoods, meals: state.meals, barcodes: state.barcodes });
+  const i = state.customFoods.findIndex(x => x.id === X.id);
+  if (i >= 0) { fresh.id = X.id; state.customFoods[i] = fresh; }        // same food: everything logged with it follows
+  else { state.customFoods.push(fresh); X.codes.forEach(c => { state.barcodes[c] = fresh.id; }); }   // a built-in food: the barcode now points at your fixed copy
+  // Servings already logged: "1 bottle" logged when a serving was wrongly 100 g becomes 1 bottle of the right size.
+  const oldG = old && old.serving && old.serving.grams > 0 ? old.serving.grams : null, newG = fresh.serving ? fresh.serving.grams : null;
+  const oldShort = old ? old.name.slice(0, 40) : '', newShort = fresh.name.slice(0, 40);
+  state.meals.forEach(m => {
+    let touched = false;
+    m.items.forEach(it => {
+      if (it.foodId !== X.id || i < 0) return;
+      if (oldG && newG && oldG !== newG && it.unit !== 'g' && Math.abs((it.gpu || 0) - oldG) < 0.01) { it.gpu = newG; it.grams = (Number(it.qty) || 1) * newG; touched = true; }
+    });
+    if (m.items.length === 1 && m.items[0].foodId === X.id && oldShort !== newShort && m.name.startsWith(oldShort + ' (')) { m.name = newShort + m.name.slice(oldShort.length); touched = true; }
+    return touched;
+  });
+  saveState();
+  const shared = cloudFixShared(X.codes, fresh);
+  ui.scan.form = X.prevForm; ui.fix = null; render();
+  try { window.scrollTo(0, X.y || 0); } catch (e) { /* harmless */ }
+  flashMark(true, 'Fixed', fresh.name);
+  toast('Fixed ' + fresh.name + (shared ? '. The shared list is updated for everyone.' : '.'), () => { const b = JSON.parse(before); state.customFoods = b.foods; state.meals = b.meals; state.barcodes = b.barcodes; saveState(); render(); });
+}
+
 // Teaching the app a new product from the numbers on its label.
 const blankForm = () => ({ name: '', state: '', basis: 'serving', servingLabel: '', servingG: '', kcal: '', p: '', c: '', f: '', na: '', k: '', vd: '', ca: '', fe: '', su: '', fib: '', sat: '', cho: '', note: '' });
 function scanSaveForm() {
@@ -4355,7 +4440,8 @@ function refreshLinkOptions() {
   sel.innerHTML = r.list.map(f => '<option value="' + esc(f.id) + '">' + esc(f.name) + ' (' + n0(f.kcal) + ' kcal per 100 g, ' + esc(foodSource(f) + usedNote(f)) + ')</option>').join('');
   if (r.list.length) sel.selectedIndex = 0;
 }
-function formHtml(F) {
+function formHtml(F, o) {
+  o = o || {};
   const inp = (key, label, attrs) => '<div><label for="scanF-' + key + '">' + label + '</label><input id="scanF-' + key + '" data-scan="f:' + key + '" value="' + esc(F[key]) + '" ' + (attrs || '') + '></div>';
   const num2 = 'type="number" min="0" step="any" inputmode="decimal"';
   const per = F.basis === 'serving' ? 'serving' : '100 g';
@@ -4372,7 +4458,7 @@ function formHtml(F) {
     '<div class="ai-row">' + inp('su', 'Total sugars (g, optional)', num2) + inp('fib', 'Fiber (g, optional)', num2) + '</div>' +
     '<div class="ai-row">' + inp('sat', 'Saturated fat (g, optional)', num2) + inp('cho', 'Cholesterol (mg, optional)', num2) + '</div>' +
     (labelCheck(F) ? '<p class="sv-warn" role="alert" style="margin:8px 0 0">' + esc(labelCheck(F)) + '</p>' : '') +
-    '<div class="ai-actions"><button class="btn primary" data-action="scan-save-form">Save product</button><button class="btn" data-action="scan-cancel-form">Cancel</button></div></div>';
+    '<div class="ai-actions"><button class="btn primary" data-action="' + (o.save || 'scan-save-form') + '">' + (o.saveLabel || 'Save product') + '</button><button class="btn" data-action="' + (o.cancel || 'scan-cancel-form') + '">Cancel</button></div></div>';
 }
 /* ---------- "My scanned foods": every product you have scanned, A to Z, one tap to log it again ----------
    A scanned product used to end up only in the big Foods list (mixed in with hundreds of built-in foods) and as a
@@ -4402,7 +4488,7 @@ function foodSlotGroups() {
 function myScanRow(e) {
   const f = e.food, sv = f.serving && f.serving.grams > 0 ? f.serving : null, kc = Math.round((f.kcal || 0) * (sv ? sv.grams : 100) / 100);
   return '<li><span><strong>' + esc(f.name) + '</strong><br><span class="muted small">' + esc(sv ? (sv.label || 'serving') : '100 g') + ' \u00b7 ' + kc + ' kcal \u00b7 barcode ' + esc(showCode(e.codes[0])) + (e.codes.length > 1 ? ' (+' + (e.codes.length - 1) + ')' : '') + '</span></span>' +
-    '<button class="btn" data-action="scan-mylog" data-id="' + esc(f.id) + '" aria-label="Log ' + esc(f.name) + '">+ Log</button></li>';
+    '<span class="my-acts"><button class="btn" data-action="scan-mylog" data-id="' + esc(f.id) + '" aria-label="Log ' + esc(f.name) + '">+ Log</button><button class="link" data-action="fix-open" data-id="' + esc(f.id) + '" aria-label="Fix the numbers for ' + esc(f.name) + '">Fix numbers</button></span></li>';
 }
 function myScansListHtml() {
   const raw = ui.myScans.q.trim(), q = raw.toLowerCase(), digits = raw.replace(/\D/g, '');
@@ -5782,6 +5868,9 @@ document.addEventListener('click', e => {
 
   else if (a.startsWith('ai-')) { aiClick(a, el); }
   else if (a.startsWith('scan-')) { scanClick(a, el); }
+  else if (a === 'fix-open') { fixOpen(el.dataset.id); }
+  else if (a === 'fix-save') { fixSave(); }
+  else if (a === 'fix-cancel') { fixClose(); }
   else if (a.startsWith('slot-')) { slotScanClick(a, el); }
   else if (a.startsWith('cloud-')) { cloudClick(a, el); }
   else if (a.startsWith('wl-')) { wlClick(a, el); }
@@ -6042,7 +6131,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.04-9';
+const APP_VERSION = '2026.10.05-1';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
