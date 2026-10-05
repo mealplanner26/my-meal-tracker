@@ -204,6 +204,9 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .keep { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; font-size: 0.95rem; }
 .keep input { width: auto; }
 .slot-tools { display: flex; align-items: baseline; gap: 12px; }
+.acct { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0; background: var(--surface); }
+.acct h3 { margin: 0 0 6px; }
+.acct-row { display: flex; gap: 8px; margin-top: 8px; } .acct-row input { flex: 1; min-width: 0; font-size: 16px; }
 /* Per-meal scan links: their own short line under the meal name, so they never get squeezed off the edge */
 .mlinks { display: flex; gap: 14px; margin: -2px 0 6px; font-size: 0.92rem; flex-wrap: wrap; }
 .mlinks .link[aria-expanded="true"] { font-weight: 700; }
@@ -592,7 +595,7 @@ ul.my-scans li .btn { flex: 0 0 auto; }
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="brand"><h1>Meal Rotation Planner</h1><p id="syncNote" class="sync-note" role="status"></p><button class="link help-link" data-action="help-open">Help and backup</button><button class="link help-link" id="unmatchedQuick" data-action="unmatched-export-quick" hidden></button></div>
+    <div class="brand"><h1>Meal Rotation Planner</h1><p id="syncNote" class="sync-note" role="status"></p><button class="link help-link" data-action="help-open">Help and backup</button><button class="link help-link" id="cloudQuick" data-action="cloud-open" hidden>Sign in to sync</button><button class="link help-link" id="unmatchedQuick" data-action="unmatched-export-quick" hidden></button></div>
     <nav class="tabs" aria-label="Sections">
       <button data-action="tab" data-tab="plan">Day</button>
       <button data-action="tab" data-tab="week">Week</button>
@@ -2436,7 +2439,7 @@ function viewHelp() {
     '<div class="ai-actions"><button class="btn primary" data-action="products-apply"' + (P.fresh.length || P.add.length ? '' : ' disabled') + '>Add them</button><button class="btn" data-action="products-cancel">Cancel</button></div>' +
     '<p class="muted small" style="margin:6px 0 0">These are numbers someone else entered from their package. Check them against yours the first time. Products and barcodes you already have are never changed.</p></div>' : '';
   return '<div class="help"><div class="datebar"><h2>Help and backup</h2><button class="btn" data-action="help-close">Back to the app</button></div>' +
-    '<p class="muted small" style="margin:4px 0 0">' + esc(sync) + '.</p>' + (H.msg ? '<p class="ai-note" role="status">' + esc(H.msg) + '</p>' : '') + box +
+    '<p class="muted small" style="margin:4px 0 0">' + esc(sync) + '.</p>' + accountHtml() + (H.msg ? '<p class="ai-note" role="status">' + esc(H.msg) + '</p>' : '') + box +
     '<h3>Read this first</h3><ul class="sv-steps">' +
     '<li><strong>What this is.</strong> A meal and nutrition tracker. Food data comes from the USDA FoodData Central database, from labels you enter yourself, and from a small list of brand barcodes. The numbers are estimates, not medical advice.</li>' +
     '<li><strong>Who it is for.</strong> Healthy adults. The vitamin and mineral amounts are for people 19 and over, and the weight goal tool needs an age of 20 or more. It is not for children, during pregnancy or breastfeeding, or for medical diets. Ask a doctor or dietitian if any of these apply to you.</li>' +
@@ -2974,6 +2977,7 @@ function render() {
   const views = VIEWS;
   const aiTab = document.querySelector('.tabs button[data-tab="ai"]');           // nothing on this tab works without a live claude.ai connection: hide it rather than show an empty tab
   if (aiTab) { const off = AI.status === 'unavailable'; aiTab.hidden = off; if (off && ui.tab === 'ai') ui.tab = 'plan'; }
+  const cq = $('cloudQuick'); if (cq) { try { cq.hidden = !(cloudOn() && !cloudSignedIn()); } catch (e) { cq.hidden = true; } }
   const uq = $('unmatchedQuick'), un = (state.unmatched || []).length;          // one-tap shortcut next to "Help and backup", so sending unmatched foods never needs a trip into Help first
   if (uq) { uq.hidden = !un; if (un) uq.textContent = 'Send ' + un + ' unmatched'; }
   const hadKbd = !!(document.activeElement && document.activeElement.id === 'slotKbd');
@@ -3217,6 +3221,7 @@ async function flushSync() {
     } while (SYNC.again);
     SYNC.retried = false;
     setSync('synced');
+    cloudShareSoon();
   } catch (e) { handleSyncError(e, true); }
   finally { SYNC.flushing = false; }
 }
@@ -3247,6 +3252,220 @@ function handleSyncError(e, fromWrite) {
     SYNC.giveUp = setTimeout(() => { if (!SYNC.ready) setSync('off'); }, 12000);
     SYNC.col.onSnapshot(onRemote, e => handleSyncError(e, false));
   } catch (e) { setSync('off'); }
+})();
+
+/* ============================================================
+   8b. SIGN-IN AND SYNC ON THE PUBLISHED WEBSITE (Supabase)
+   Outside claude.ai there is no Claude account to sync through, so the website can use its own small database
+   (a free Supabase project the site owner sets up; see the README). Signing in is by a 6-digit code emailed to you:
+   no password. Your data goes in your own rows, which the database only lets your sign-in read or change. It reuses
+   the sync engine above unchanged: CL below just looks like the claude.ai database to it.
+   The same database holds a shared list of products: when a signed-in person teaches the app a barcode, that product
+   (its name and label numbers -- never anyone's food log) is added for everyone, so the next person's scan finds it.
+   Empty CLOUD = none of this is switched on: no sign-in is offered and nothing is ever sent anywhere.
+   ============================================================ */
+const CLOUD = { url: 'https://rwvvhqiqxcplhkfsnqya.supabase.co', key: 'sb_publishable_eXx4Ya5St5NOI4J6M-9D3Q_BSiZBT9d' };
+const CL = { session: null, step: 'idle', email: '', emailIn: '', codeIn: '', msg: '', busy: false, poll: null, pulling: false, cb: null, err: null, shareTimer: null };
+const CL_KEY = 'mp-cloud-session';
+function cloudOn() { return !!(CLOUD.url && CLOUD.key) && !(typeof window !== 'undefined' && window.claude && typeof window.claude.use === 'function'); }
+function cloudSignedIn() { return !!(CL.session && CL.session.user && CL.session.user.id); }
+function cloudSave() { try { if (CL.session) localStorage.setItem(CL_KEY, JSON.stringify(CL.session)); else localStorage.removeItem(CL_KEY); } catch (e) { /* this visit only */ } }
+function cloudErr(status, msg) { const e = new Error(msg || ('HTTP ' + status)); e.status = status;
+  e.code = status === 401 || status === 403 ? 'revoked' : status === 429 ? 'resource_exhausted' : !status || status >= 500 ? 'unavailable' : 'failed'; return e; }
+async function cloudFetch(path, opts, auth, ms) {
+  opts = opts || {};
+  if (auth) await cloudFresh();
+  const go = async () => {
+    // The site key goes in "apikey" only: Supabase's newer publishable keys are refused if also sent as "Authorization".
+    const h = Object.assign({ apikey: CLOUD.key, 'Content-Type': 'application/json' }, auth && CL.session ? { Authorization: 'Bearer ' + CL.session.access_token } : {}, opts.headers || {});
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), ms || 10000);
+    try { return await fetch(CLOUD.url.replace(/\/$/, '') + '/' + path, { method: opts.method || 'GET', headers: h, body: opts.body === undefined ? undefined : JSON.stringify(opts.body), signal: ctl.signal }); }
+    catch (e) { throw cloudErr(0, 'no connection'); }
+    finally { clearTimeout(timer); }
+  };
+  let res = await go();
+  if (res.status === 401 && auth && CL.session) { if (await cloudRefresh()) res = await go(); }
+  const text = await res.text(); let body = null; try { body = text ? JSON.parse(text) : null; } catch (e) { body = null; }
+  if (!res.ok) throw cloudErr(res.status, body && (body.msg || body.message || body.error_description || body.error));
+  return body;
+}
+// Sign-ins last about an hour; a refresh code keeps you signed in after that without asking again.
+async function cloudFresh() { if (CL.session && (CL.session.expires_at || 0) * 1000 - Date.now() < 60000) await cloudRefresh(); }
+async function cloudRefresh() {
+  if (!CL.session || !CL.session.refresh_token) return false;
+  try {
+    const res = await fetch(CLOUD.url.replace(/\/$/, '') + '/auth/v1/token?grant_type=refresh_token', { method: 'POST', headers: { apikey: CLOUD.key, 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: CL.session.refresh_token }) });
+    if (res.ok) { cloudSetSession(await res.json()); return true; }
+    if (res.status === 400 || res.status === 401) cloudSignedOut('Your sign-in ran out. Sign in again to keep syncing.');
+  } catch (e) { /* offline: try again later */ }
+  return false;
+}
+function cloudSetSession(j) {
+  if (!j || !j.access_token || !j.user) return;
+  CL.session = { access_token: j.access_token, refresh_token: j.refresh_token || (CL.session && CL.session.refresh_token), expires_at: j.expires_at || Math.floor(Date.now() / 1000) + (j.expires_in || 3600),
+    user: { id: j.user.id, email: j.user.email || CL.email } };
+  cloudSave();
+}
+function cloudSignedOut(msg) {
+  const uid = CL.session && CL.session.user && CL.session.user.id;
+  CL.session = null; cloudSave(); cloudStop();
+  if (uid) try { localStorage.removeItem('meal-planner-linked-sb-' + uid); } catch (e) { /* ignore */ }   // next sign-in here combines both sides again
+  CL.step = 'idle'; CL.msg = msg || ''; setSync('off'); render();
+}
+function cloudStop() { clearInterval(CL.poll); CL.poll = null; SYNC.col = null; SYNC.ready = false; SYNC.remote = {}; clearTimeout(SYNC.timer); clearTimeout(SYNC.giveUp); }
+// Pretend to be the claude.ai database for the sync engine: doc(id).set(data) saves one document; onSnapshot gets everything.
+function cloudStartSync() {
+  cloudStop();
+  SYNC.uid = 'sb-' + CL.session.user.id;
+  SYNC.col = { doc: id => ({ set: data => cloudFetch('rest/v1/user_docs?on_conflict=user_id,id', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: [{ user_id: CL.session.user.id, id, data }] }, true) }),
+               onSnapshot: (cb, err) => { CL.cb = cb; CL.err = err; cloudPull(); } };
+  setSync('connecting');
+  SYNC.giveUp = setTimeout(() => { if (!SYNC.ready && SYNC.col) setSync('error', 'could not reach your account, will keep trying'); }, 15000);
+  SYNC.col.onSnapshot(onRemote, e => handleSyncError(e, false));
+  // Changes from your other devices: checked every 20 seconds while the app is open and on screen, and when you come back to it.
+  CL.poll = setInterval(() => { if (!document.hidden) cloudPull(); }, 20000);
+}
+async function cloudPull() {
+  if (!SYNC.col || !CL.cb || CL.pulling || navigator.onLine === false) return;
+  CL.pulling = true;
+  try {
+    const rows = await cloudFetch('rest/v1/user_docs?select=id,data', {}, true);
+    if (!SYNC.col) return;
+    CL.cb({ metadata: { fromCache: false }, docs: (rows || []).map(r => ({ id: r.id, exists: true, data: () => r.data })) });
+  } catch (e) { if (e.code === 'revoked') cloudSignedOut('You were signed out. Sign in again to keep syncing.'); else if (CL.err) CL.err(e); }
+  finally { CL.pulling = false; }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && cloudSignedIn()) cloudPull(); });
+async function cloudSendCode() {
+  const email = (CL.emailIn || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { CL.msg = 'Type your email address.'; render(); return; }
+  CL.busy = true; CL.msg = 'Sending\u2026'; render();
+  try {
+    await cloudFetch('auth/v1/otp', { method: 'POST', body: { email, create_user: true } });
+    Object.assign(CL, { step: 'code', email, codeIn: '', msg: 'Sent. It can take a minute; check junk mail too.' });
+  } catch (e) { CL.msg = e.status === 429 ? 'Too many sign-in emails were sent just now. Wait a few minutes and try again.' : e.code === 'unavailable' ? 'Could not reach the sign-in service. Check your connection.' : 'Could not send the code: ' + e.message; }
+  CL.busy = false; render();
+  if (CL.step === 'code') { const b = $('cloudCode'); if (b && b.focus) b.focus(); }
+}
+// The link in Supabase's standard email looks like https://<project>.supabase.co/auth/v1/verify?token=<long code>&type=magiclink&...
+// That long code can be checked directly, without opening the link -- so pasting the copied link signs in this app,
+// even the home-screen app (opening the link would sign in Safari instead, which keeps separate data).
+function linkToken(t) {
+  const m = /[?&]token=([A-Za-z0-9_-]{20,})/.exec(t || ''), ty = /[?&]type=([a-z_]+)/.exec(t || '');
+  return m ? { token_hash: m[1], type: ty && ty[1] === 'signup' ? 'signup' : 'email' } : null;
+}
+async function cloudVerify() {
+  const raw = (CL.codeIn || '').trim(), link = linkToken(raw), token = raw.replace(/\D/g, '');
+  if (!link && token.length < 6) { CL.msg = /^https?:/i.test(raw) ? 'That link is not the one from the sign-in email. In the email, press and hold \u201cLog In\u201d, tap Copy Link, and paste it here.' : 'Type the 6-digit code from the email, or paste the link from it.'; render(); return; }
+  CL.busy = true; CL.msg = 'Signing in\u2026'; render();
+  try {
+    const j = await cloudFetch('auth/v1/verify', { method: 'POST', body: link ? link : { type: 'email', email: CL.email, token } });
+    cloudSetSession(j);
+    if (!cloudSignedIn()) throw cloudErr(400, 'no session');
+    Object.assign(CL, { step: 'idle', msg: 'Signed in. Your meals now sync between every device you sign in on.' });
+    cloudStartSync();
+  } catch (e) { CL.msg = e.code === 'unavailable' ? 'Could not reach the sign-in service. Check your connection.' : (link ? 'That link did not work. Each link works once and for an hour; tap \u201cSend a new email\u201d and paste the new link without opening it.' : 'That code did not work. It may have expired; tap \u201cSend a new email\u201d.'); }
+  CL.busy = false; render();
+}
+// Someone tapped the link in the email instead: Supabase sends this page back with the sign-in in the address
+// (#access_token=...). Take it, and tidy the address so a reload or a bookmark does not carry it around.
+async function cloudFromAddress() {
+  const h = String(location.hash || '');
+  if (!/access_token=|error_description=/.test(h)) return false;
+  const q = new URLSearchParams(h.replace(/^#/, ''));
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* harmless */ }
+  if (q.get('error_description')) { CL.msg = 'That sign-in link did not work (' + q.get('error_description').replace(/\+/g, ' ') + '). Send a new email and try again.'; ui.tab = 'help'; return false; }   // no render here: this runs while the page is still starting up
+  try {
+    CL.session = { access_token: q.get('access_token'), refresh_token: q.get('refresh_token'), expires_at: Number(q.get('expires_at')) || Math.floor(Date.now() / 1000) + (Number(q.get('expires_in')) || 3600), user: null };
+    const u = await cloudFetch('auth/v1/user', {}, true);
+    if (!u || !u.id) throw cloudErr(401);
+    CL.session.user = { id: u.id, email: u.email || '' }; cloudSave();
+    Object.assign(CL, { step: 'idle', msg: 'Signed in. Your meals now sync between every device you sign in on.' });
+    return true;
+  } catch (e) { CL.session = null; cloudSave(); CL.msg = 'That sign-in link did not work. Send a new email and try again.'; return false; }
+}
+function cloudClick(a) {
+  if (a === 'cloud-open') { ui.tab = 'help'; render(); const b = $('cloudEmail') || $('acct'); try { if (b && b.scrollIntoView) b.scrollIntoView({ block: 'center' }); if (b && b.focus) b.focus(); } catch (e) { /* harmless */ } }
+  else if (a === 'cloud-send') cloudSendCode();
+  else if (a === 'cloud-verify') cloudVerify();
+  else if (a === 'cloud-back') { Object.assign(CL, { step: 'idle', msg: '' }); render(); }
+  else if (a === 'cloud-signout') {
+    const s0 = CL.session;
+    if (s0) fetch(CLOUD.url.replace(/\/$/, '') + '/auth/v1/logout', { method: 'POST', headers: { apikey: CLOUD.key, Authorization: 'Bearer ' + s0.access_token } }).catch(() => {});
+    cloudSignedOut('Signed out. Everything is still on this device.');
+  }
+}
+function accountHtml() {
+  if (!cloudOn()) return '';
+  let body;
+  if (cloudSignedIn()) body = '<p style="margin:0">Signed in as <strong>' + esc(CL.session.user.email || '') + '</strong>. Your meals, foods and plan sync between every phone and computer where you sign in with this email.</p>' +
+    '<div class="ai-actions"><button class="btn" data-action="cloud-signout">Sign out</button></div>';
+  else if (CL.step === 'code') body = '<p style="margin:0">We emailed <strong>' + esc(CL.email) + '</strong>. If the email shows a 6-digit code, type it here. If it only has a <strong>Log In</strong> link: <strong>press and hold</strong> the link, tap <strong>Copy Link</strong>, and paste it here. Don\u2019t tap the link itself.</p>' +
+    '<div class="acct-row"><input id="cloudCode" data-cloud="codeIn" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Code or link" value="' + esc(CL.codeIn) + '" aria-label="Code or link from the email">' +
+    '<button class="btn primary" data-action="cloud-verify"' + (CL.busy ? ' disabled' : '') + '>Sign in</button></div>' +
+    '<p style="margin:6px 0 0"><button class="link" data-action="cloud-send">Send a new email</button> \u00b7 <button class="link" data-action="cloud-back">Use a different email</button></p>';
+  else body = '<p style="margin:0">Sign in to keep your meals in sync between your phone and computer. We email you a code or a link: there is no password.</p>' +
+    '<div class="acct-row"><input id="cloudEmail" data-cloud="emailIn" type="email" inputmode="email" autocomplete="email" placeholder="you@icloud.com" value="' + esc(CL.emailIn) + '" aria-label="Your email">' +
+    '<button class="btn primary" data-action="cloud-send"' + (CL.busy ? ' disabled' : '') + '>Email me a code</button></div>';
+  return '<section class="acct" id="acct" aria-label="Your account"><h3>Your account</h3>' + body + (CL.msg ? '<p class="ai-note" role="status" style="margin:8px 0 0">' + esc(CL.msg) + '</p>' : '') +
+    '<p class="muted small" style="margin:8px 0 0">While you are signed in, products you teach the app (a barcode with its name and label numbers) are added to a shared list, so anyone using this site finds them on their first scan. Your food log, meals, plan, weight and details are never shared.</p></section>';
+}
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || !e.target) return;
+  if (e.target.id === 'cloudEmail') { e.preventDefault(); cloudSendCode(); }
+  else if (e.target.id === 'cloudCode') { e.preventDefault(); cloudVerify(); }
+});
+
+/* ---------- the shared product list ---------- */
+// A shared product is stored in the same 21-field, per-100 g form as the built-in USDA list and the live lookups.
+const recNum = v => v === null || (typeof v === 'number' && isFinite(v) && v >= 0);
+function validRec(r) {
+  return Array.isArray(r) && r.length === 21 && typeof r[1] === 'string' && r[1].trim() && typeof r[3] === 'number' && r[3] > 0 && r[3] < 5000 &&
+    [5, 6, 7, 8].every(i => typeof r[i] === 'number' && isFinite(r[i]) && r[i] >= 0) && r[5] <= 950 && r[6] + r[7] + r[8] <= 105 &&
+    [9, 10, 11, 12, 13, 14, 15, 16, 17].every(i => recNum(r[i]));
+}
+function foodToRec(code, f) {
+  if (!f || ![f.kcal, f.p, f.c, f.f].every(v => typeof v === 'number' && isFinite(v))) return null;
+  const grams = f.serving && f.serving.grams > 0 ? f.serving.grams : 100, label = f.serving && f.serving.label ? f.serving.label : '100 g';
+  const mn = k => Array.isArray(f.mn) ? (f.mn[MN_KEYS.indexOf(k)] == null ? null : f.mn[MN_KEYS.indexOf(k)]) : null;
+  const o = v => v == null ? null : v;
+  const r = [code, String(f.name).slice(0, 80), 'Shared', grams, 'g', f.kcal, f.p, f.c, f.f, o(f.na), o(f.su), o(f.fib), o(f.sat), o(f.cho), o(f.k), mn('ca'), mn('fe'), mn('vd'),
+    new Date().toISOString().slice(0, 7), String(label).slice(0, 30), 0];
+  return validRec(r) ? r : null;
+}
+async function lookupShared(code) {
+  if (!CLOUD.url || !CLOUD.key || navigator.onLine === false) return null;
+  try {
+    const rows = await cloudFetch('rest/v1/shared_foods?select=rec&code=eq.' + encodeURIComponent(code), {}, false, 5000);
+    const rec = rows && rows[0] && rows[0].rec;
+    if (!validRec(rec)) return null;
+    const r = rec.slice(); r[0] = code; r[2] = 'shared by someone using this site'; r.src = 'shared';
+    return r;
+  } catch (e) { return null; }
+}
+function cloudShareSoon() { if (cloudSignedIn()) { clearTimeout(CL.shareTimer); CL.shareTimer = setTimeout(cloudShareNew, 1500); } }
+async function cloudShareNew() {
+  if (!cloudSignedIn() || navigator.onLine === false) return;
+  let sent = {}; try { sent = JSON.parse(localStorage.getItem('mp-shared-sent') || '{}') || {}; } catch (e) { sent = {}; }
+  const fm = foodMap(), out = [];
+  for (const [code, id] of Object.entries(state.barcodes || {})) {
+    if (sent[code] || brandRecord(code) || /^custom-shared-/.test(id)) continue;       // the built-in list and the shared list already have these
+    const rec = foodToRec(code, fm[id]);
+    if (rec) out.push({ code, rec });
+    if (out.length >= 50) break;
+  }
+  if (!out.length) return;
+  try {
+    await cloudFetch('rest/v1/shared_foods', { method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: out }, true);
+    out.forEach(x => { sent[x.code] = 1; });
+    try { localStorage.setItem('mp-shared-sent', JSON.stringify(sent)); } catch (e) { /* will try again; duplicates are ignored */ }
+  } catch (e) { /* not important enough to bother anyone about; it tries again after the next save */ }
+}
+(async function initCloud() {
+  if (!cloudOn()) return;
+  try { const j = JSON.parse(localStorage.getItem(CL_KEY) || 'null'); if (j && j.access_token && j.user && j.user.id) CL.session = j; } catch (e) { CL.session = null; }
+  if (await cloudFromAddress()) render();
+  if (cloudSignedIn()) cloudStartSync();
 })();
 
 /* ============================================================
@@ -3878,8 +4097,8 @@ function brandFood(rec) {
    your food log) to a free, public, crowd-sourced product database, and only when a scan is not already known on
    this device and not in the built-in USDA list. See the README and Help for the privacy trade-off this is. */
 const OFF_CACHE = {};        // code -> a BRAND_PACK-shaped record, or null once a lookup has come back with nothing usable
-function offFood(rec) { const food = brandFood(rec); food.id = 'custom-' + (rec.src === 'usda' ? 'usda' : 'off') + '-' + rec[0]; return food; }
-const srcName = rec => rec && rec.src === 'usda' ? 'the USDA food database' : 'Open Food Facts';
+function offFood(rec) { const food = brandFood(rec); food.id = 'custom-' + (rec.src === 'usda' ? 'usda' : rec.src === 'shared' ? 'shared' : 'off') + '-' + rec[0]; return food; }
+const srcName = rec => rec && rec.src === 'usda' ? 'the USDA food database' : rec && rec.src === 'shared' ? 'foods people using this site have added' : 'Open Food Facts';
 /* ---------- USDA FoodData Central, live: the full branded-foods database ----------
    The built-in list is a 770-product slice of this; the live database has hundreds of thousands of US products, with
    the numbers the manufacturer reported. Checked at the same time as Open Food Facts; when both know a product, the
@@ -3921,9 +4140,9 @@ async function lookupUsda(code) {
 }
 // Both databases at once. Either may fail on its own; the USDA's manufacturer numbers are preferred when both answer.
 async function lookupOnline(code) {
-  const [u, o] = await Promise.all([lookupUsda(code), lookupOpenFoodFacts(code)]);
+  const [u, sh, o] = await Promise.all([lookupUsda(code), lookupShared(code), lookupOpenFoodFacts(code)]);
   if (o) o.src = 'off';
-  return u || o || null;
+  return u || sh || o || null;      // the manufacturer's numbers first, then someone's label here, then the crowd-sourced database
 }
 /* ---------- sending what nothing recognized to whoever runs this site ----------
    Off until the site owner fills in REPORT (a Google Form's address and its four question IDs; see the README).
@@ -3985,12 +4204,14 @@ function offCardHtml(rec) {
   return '<article class="ai-card brand-card"><h3>' + esc(rec[1]) + '</h3>' +
     (rec.src === 'usda'
       ? '<p class="muted small" style="margin:0">Found in the USDA branded foods database (' + esc(rec[2]) + '), as reported by the manufacturer. Data from <strong>' + esc(brandDateText(rec)) + '</strong>.</p>'
+      : rec.src === 'shared'
+      ? '<p class="muted small" style="margin:0">Added by someone else using this site, from their package.</p><div class="sv-warn"><strong>Typed in by another person, not checked by the manufacturer.</strong> Check it against your package the first time.</div>'
       : '<p class="muted small" style="margin:0">Found on Open Food Facts (' + esc(rec[2]) + '), a free, crowd-sourced product database.</p>' +
         '<div class="sv-warn"><strong>This comes from other people\u2019s scans, not the manufacturer.</strong> Check it against your package the first time.</div>') +
     '<p style="margin:8px 0 0"><strong>' + esc(rec[19] || '1 serving') + ' (' + fmtG(rec[3]) + ' ' + (rec[4] === 'ml' ? 'mL' : 'g') + ')</strong>: ' + n0(srv(5)) + ' kcal, ' + n0(srv(6)) + ' g protein, ' + n0(srv(7)) + ' g carbs, ' + n0(srv(8)) + ' g fat; ' + esc(extra) + '.</p>' +
     '<div class="ai-actions"><button class="btn primary big" data-action="scan-off-use">Use this product</button><button class="btn" data-action="scan-off-skip">This is not my package</button></div>' +
     '<p style="margin:6px 0 0"><button class="link" data-action="report" data-kind="brand">Report a wrong number</button></p>' +
-    '<p class="muted small" style="margin:8px 0 0">' + (rec.src === 'usda' ? 'Source: USDA FoodData Central, Branded Foods (public domain), looked up live. Check it against your package the first time.' : 'Source: Open Food Facts (openfoodfacts.org) \u2014 a free, crowd-sourced public database, not the USDA list and not checked by me or by Anthropic.') + '</p></article>';
+    '<p class="muted small" style="margin:8px 0 0">' + (rec.src === 'usda' ? 'Source: USDA FoodData Central, Branded Foods (public domain), looked up live. Check it against your package the first time.' : rec.src === 'shared' ? 'Source: this site\u2019s shared product list.' : 'Source: Open Food Facts (openfoodfacts.org) \u2014 a free, crowd-sourced public database, not the USDA list and not checked by me or by Anthropic.') + '</p></article>';
 }
 async function checkOffInBackground(code, slot) {
   // Fire-and-forget, used only for a live-camera miss, so scanning keeps going at its normal pace instead of freezing
@@ -5557,6 +5778,7 @@ document.addEventListener('click', e => {
   else if (a.startsWith('ai-')) { aiClick(a, el); }
   else if (a.startsWith('scan-')) { scanClick(a, el); }
   else if (a.startsWith('slot-')) { slotScanClick(a, el); }
+  else if (a.startsWith('cloud-')) { cloudClick(a, el); }
   else if (a.startsWith('wl-')) { wlClick(a, el); }
   else if (a === 'rdi-open') { ui.tab = 'rdi'; render(); }
   else if (a === 'rdi-range') { ui.rdiRange = el.dataset.range === 'week' ? 'week' : 'day'; render(); }
@@ -5796,6 +6018,7 @@ document.addEventListener('change', e => {
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.dataset && t.dataset.ai) { aiInput(t); return; }
+  if (t.dataset && t.dataset.cloud) { CL[t.dataset.cloud] = t.value; return; }
   if (t.dataset && t.dataset.scan) { scanInput(t); return; }
   if (t.dataset && t.dataset.scanbulk) { scanBulkInput(t); return; }
   if (t.dataset && t.dataset.quick) { quickInput(t); return; }
@@ -5814,7 +6037,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.04-7';
+const APP_VERSION = '2026.10.04-8';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
@@ -5880,7 +6103,7 @@ VIEWS.help = function () {
     '<li><strong>Last backup:</strong> ' + (state.lastBackup ? esc(String(state.lastBackup).slice(0, 10)) + ' (' + d + ' days ago)' : 'none yet') + '.</li></ul>' +
     '<h3>Keep your data safe</h3><ul class="sv-steps"><li>On an iPhone or iPad: in Safari, tap the Share button, then "Add to Home Screen", and open the app from there. Safari can erase the saved data of a website you have not opened for a week, and apps added to the home screen are counted separately. That is Apple\'s behavior as I understand it, so a backup is still your real protection.</li>' +
     '<li>Download a backup every week. The app reminds you when it has been a week.</li></ul>' +
-    '<h3>Privacy</h3><p class="muted small" style="margin:0">This site has no accounts and no analytics. What you log stays in this browser on this device and is sent nowhere unless you download a backup and share it. The exceptions are all about barcodes: scanning a barcode this device has not seen before and that is not in the built-in list sends just that barcode number (nothing about you or your food log) to two free public product databases, USDA FoodData Central and Open Food Facts, so it can be recognised automatically instead of you typing it in by hand. If the person who runs this site has turned it on, a barcode that neither database knows, and label numbers you type in for a product, are also sent to them so the product can be added for everyone \u2014 again only the barcode and the product\u2019s numbers, never anything about you. The website\'s host may keep ordinary visit logs (such as IP addresses) that this app can not see. To delete your data, clear this site\'s data in your browser settings.</p>';
+    '<h3>Privacy</h3><p class="muted small" style="margin:0">' + (cloudOn() ? 'This site has no analytics. Signing in is optional. <strong>If you sign in</strong>, your meals, foods, plan, weights, steps and details are stored in this site\'s database (a Supabase project run by the person who shared this site with you) so they sync between your devices; only your sign-in can read them through the app, but the site owner can see what is stored. While you are signed in, products you teach the app (a barcode, its name and label numbers) go on a shared list for everyone, without your name. <strong>If you do not sign in</strong>, what you log stays in this browser on this device. ' : 'This site has no accounts and no analytics. What you log stays in this browser on this device and is sent nowhere unless you download a backup and share it. ') + 'The other exceptions are all about barcodes: scanning a barcode this device has not seen before and that is not in the built-in list sends just that barcode number (nothing about you or your food log) to two free public product databases, USDA FoodData Central and Open Food Facts, so it can be recognised automatically instead of you typing it in by hand. If the person who runs this site has turned it on, a barcode that neither database knows, and label numbers you type in for a product, are also sent to them so the product can be added for everyone \u2014 again only the barcode and the product\u2019s numbers, never anything about you. The website\'s host may keep ordinary visit logs (such as IP addresses) that this app can not see. To delete your data, clear this site\'s data in your browser settings' + (cloudOn() ? ', and ask the site owner to delete your account' : '') + '.</p>';
   const k = base.lastIndexOf('</div>');
   return base.slice(0, k) + extra + base.slice(k);
 };
