@@ -211,6 +211,7 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .acct h3 { margin: 0 0 6px; }
 .um-ask { font-size: 0.85rem; display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
 .q-list { list-style: none; padding: 0; margin: 8px 0 0; } .q-list li { border-top: 1px solid var(--line); padding: 8px 0; }
+.q-h { margin: 14px 0 4px; font-size: 1rem; } .q-rep { color: #b5533c; }
 .q-acts { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .acct-row { display: flex; gap: 8px; margin-top: 8px; } .acct-row input { flex: 1; min-width: 0; font-size: 16px; }
 /* Per-meal scan links: their own short line under the meal name, so they never get squeezed off the edge */
@@ -3431,7 +3432,12 @@ function cloudClick(a) {
 async function queueLoad() {
   const Q = CL.q || (CL.q = { rows: null, busy: false, msg: '' });
   Q.busy = true; Q.at = Date.now(); Q.msg = ''; render();
-  try { Q.rows = (await cloudFetch('rest/v1/pending_foods?select=code,rec,source,created_at&order=created_at.asc&limit=100', {}, true)) || []; Q.rows = Q.rows.filter(r => validRec(r.rec)); }
+  try {
+    try { Q.rows = await cloudFetch('rest/v1/pending_foods?select=code,rec,source,created_at,reports&order=reports.desc,created_at.asc&limit=100', {}, true); }
+    catch (e) { if (e.status !== 400) throw e; Q.rows = await cloudFetch('rest/v1/pending_foods?select=code,rec,source,created_at&order=created_at.asc&limit=100', {}, true); }   // before update 5
+    Q.rows = (Q.rows || []).filter(r => validRec(r.rec));
+    try { Q.missing = (await cloudFetch('rest/v1/missing_foods?select=code,seen,last_seen&order=seen.desc,last_seen.desc&limit=100', {}, true)) || []; } catch (e) { Q.missing = null; }
+  }
   catch (e) { Q.rows = null; Q.msg = 'Could not load the list (' + (e.status ? 'error ' + e.status : 'no connection') + '). If this is new, run supabase-update-4.sql in Supabase first.'; }
   Q.busy = false; render();
 }
@@ -3449,19 +3455,34 @@ async function queueAct(code, how, rec) {
   } catch (e) { toast('Could not ' + (how === 'approve' ? 'approve' : 'remove') + ' it (' + (e.status ? 'error ' + e.status : 'no connection') + ').'); }
   render();
 }
+async function missingAct(code, rec) {
+  const Q = CL.q; if (!Q) return;
+  try {
+    if (rec) await cloudFetch('rest/v1/shared_foods?on_conflict=code', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: [{ code, rec, verified: true }] }, true);
+    await cloudFetch('rest/v1/missing_foods?code=eq.' + encodeURIComponent(code), { method: 'DELETE', headers: { Prefer: 'return=minimal' } }, true);
+    Q.missing = (Q.missing || []).filter(m => m.code !== code);
+    toast(rec ? 'Saved: everyone\u2019s next scan of it finds these numbers.' : 'Dismissed.');
+  } catch (e) { toast('Could not ' + (rec ? 'save' : 'dismiss') + ' it (' + (e.status ? 'error ' + e.status : 'no connection') + ').'); }
+  render();
+}
 function queueHtml() {
   if (!cloudOn() || !CL.owner) return '';
   const Q = CL.q || { rows: null };
   if (!Q.busy && ((!Q.rows && !Q.msg) || Date.now() - (Q.at || 0) > 30000)) { Q.at = Date.now(); setTimeout(queueLoad, 0); }   // fresh each time Help is opened
-  const srcText = { off: 'from Open Food Facts', shared: 'from the shared list', label: 'typed from a label by someone', fix: 'corrected by someone' };
+  const srcText = { off: 'from Open Food Facts', shared: 'from the shared list', label: 'typed from a label by someone', fix: 'corrected by someone', reported: 'reported as wrong' };
   const row = r => { const g = r.rec[3], k = x => r.rec[x] == null ? '\u2013' : n0(r.rec[x] * g / 100);
-    return '<li><div><strong>' + esc(r.rec[1]) + '</strong><br><span class="muted small">' + esc(r.rec[19] || 'serving') + ' (' + fmtG(g) + (r.rec[4] === 'ml' ? ' mL' : ' g') + '): ' + k(5) + ' kcal \u00b7 ' + k(6) + ' g protein \u00b7 ' + k(7) + ' g carbs \u00b7 ' + k(8) + ' g fat \u00b7 barcode ' + esc(showCode(r.code)) + ' \u00b7 ' + esc(srcText[r.source] || '') + '</span></div>' +
+    return '<li><div><strong>' + esc(r.rec[1]) + '</strong><br><span class="muted small">' + esc(r.rec[19] || 'serving') + ' (' + fmtG(g) + (r.rec[4] === 'ml' ? ' mL' : ' g') + '): ' + k(5) + ' kcal \u00b7 ' + k(6) + ' g protein \u00b7 ' + k(7) + ' g carbs \u00b7 ' + k(8) + ' g fat \u00b7 barcode ' + esc(showCode(r.code)) + ' \u00b7 ' + (r.source === 'reported' ? '<strong class="q-rep">reported as wrong' + (r.reports > 1 ? ' ' + r.reports + '\u00d7' : '') + '</strong>' : esc(srcText[r.source] || '')) + '</span></div>' +
       '<div class="q-acts"><button class="btn primary" data-action="q-approve" data-code="' + esc(r.code) + '">Approve</button><button class="btn" data-action="q-fix" data-code="' + esc(r.code) + '">Fix</button><button class="link danger" data-action="q-reject" data-code="' + esc(r.code) + '">Reject</button></div></li>'; };
-  const fixing = ui.qfix ? '<div id="qFixForm"><p class="ai-note" style="margin:8px 0 0">Fix the numbers from the package, then approve.</p>' + formHtml(ui.scan.form, { save: 'q-fix-save', cancel: 'q-fix-cancel', saveLabel: 'Approve with these numbers' }) + '</div>' : '';
+  const fixing = ui.qfix ? '<div id="qFixForm"><p class="ai-note" style="margin:8px 0 0">' + (ui.qfix.missing ? 'Barcode ' + esc(showCode(ui.qfix.code)) + ': type the numbers from its package. Saving makes it known, and checked, for everyone.' : 'Fix the numbers from the package, then approve.') + '</p>' +
+    formHtml(ui.scan.form, { save: 'q-fix-save', cancel: 'q-fix-cancel', saveLabel: ui.qfix.missing ? 'Save for everyone' : 'Approve with these numbers' }) + '</div>' : '';
+  const M = Q.missing;
+  const missingHtml = M && M.length ? '<h4 class="q-h">Barcodes nobody could find (' + M.length + ')</h4><p class="muted small" style="margin:0">Scanned by people, but not in any food database. The most-scanned are first. If you have one, type its label in once and everyone\u2019s next scan finds it.</p><ul class="q-list">' +
+    M.map(m => '<li><div><strong>Barcode ' + esc(showCode(m.code)) + '</strong><br><span class="muted small">scanned by ' + m.seen + ' ' + (m.seen === 1 ? 'person' : 'people') + (m.last_seen ? ' \u00b7 last ' + esc(String(m.last_seen).slice(0, 10)) : '') + '</span></div>' +
+      '<div class="q-acts"><button class="btn" data-action="q-mtype" data-code="' + esc(m.code) + '">Type the label</button><button class="link danger" data-action="q-mdismiss" data-code="' + esc(m.code) + '">Dismiss</button></div></li>').join('') + '</ul>' : '';
   return '<section class="acct" id="queue" aria-label="Products to approve"><h3>Products to approve' + (Q.rows ? ' (' + Q.rows.length + ')' : '') + '</h3>' +
     '<p class="muted small" style="margin:0">Products people scanned that are not checked yet. Compare with the package if you can. <strong>Approve</strong> makes them checked for everyone; <strong>Reject</strong> just removes them from this list.</p>' +
     fixing + (Q.busy ? '<p class="muted small">Loading\u2026</p>' : Q.msg ? '<p class="ai-note">' + esc(Q.msg) + '</p>' : Q.rows && !Q.rows.length ? '<p class="muted small">Nothing waiting. \u2713</p>' : Q.rows ? '<ul class="q-list">' + Q.rows.map(row).join('') + '</ul>' : '') +
-    '<p style="margin:6px 0 0"><button class="link" data-action="q-reload">Refresh the list</button></p></section>';
+    missingHtml + '<p style="margin:6px 0 0"><button class="link" data-action="q-reload">Refresh the lists</button></p></section>';
 }
 function queueClick(a, el) {
   const code = el && el.dataset ? el.dataset.code : '';
@@ -3474,13 +3495,19 @@ function queueClick(a, el) {
     ui.qfix = { code, prevForm: ui.scan.form }; ui.scan.form = foodToForm(offFood(rec)); render();
     const el2 = $('qFixForm'); try { if (el2 && el2.scrollIntoView) el2.scrollIntoView({ block: 'start' }); } catch (e) { /* harmless */ }
   }
+  else if (a === 'q-mtype') {
+    ui.qfix = { code, missing: true, prevForm: ui.scan.form }; ui.scan.form = blankForm(); render();
+    const el2 = $('qFixForm'); try { if (el2 && el2.scrollIntoView) el2.scrollIntoView({ block: 'start' }); } catch (e) { /* harmless */ }
+  }
+  else if (a === 'q-mdismiss') missingAct(code, null);
   else if (a === 'q-fix-cancel') { if (ui.qfix) { ui.scan.form = ui.qfix.prevForm; ui.qfix = null; render(); } }
   else if (a === 'q-fix-save') {
     const X = ui.qfix, F = ui.scan.form; if (!X || !F) return;
     if (!F.name.trim() || !(parseFloat(F.kcal) >= 0) || (F.basis === 'serving' && !(parseFloat(F.servingG) > 0))) { toast('Fill in the name, calories and serving size in grams.'); return; }
     const bad = labelHardCheck(F); if (bad) { toast(bad); return; }
     const rec = foodToRec(X.code, labelToFood(F)); if (!rec) { toast('Those numbers do not look possible. Check them again.'); return; }
-    ui.scan.form = X.prevForm; ui.qfix = null; queueAct(X.code, 'approve', rec);
+    ui.scan.form = X.prevForm; ui.qfix = null;
+    if (X.missing) missingAct(X.code, rec); else queueAct(X.code, 'approve', rec);
   }
 }
 function accountHtml() {
@@ -3575,6 +3602,33 @@ async function cloudUpgrade(code, id) {
   const rec = await lookupShared(code);
   if (!rec || !rec.verified) return;
   if (replaceFoodWithRec(id, rec, true)) { saveState(); render(); }
+}
+// The owner's "Barcodes nobody could find" list: just the barcode, counted once per device, through a database function
+// (report_missing, supabase-update-5.sql) so nobody can read or change the list itself.
+function cloudReportMissing(code) {
+  if (!CLOUD.url || !CLOUD.key || navigator.onLine === false || !/^\d{8,14}$/.test(code || '')) return;
+  let sent = {}; try { sent = JSON.parse(localStorage.getItem('mp-missing-sent') || '{}') || {}; } catch (e) { sent = {}; }
+  if (sent[code]) return;
+  cloudFetch('rest/v1/rpc/report_missing', { method: 'POST', body: { p_code: code } }, cloudSignedIn())
+    .then(() => { sent[code] = Date.now(); try { localStorage.setItem('mp-missing-sent', JSON.stringify(sent)); } catch (e) { /* may count twice; harmless */ } })
+    .catch(() => { /* tries again next time this barcode is not found */ });
+}
+// "Report a wrong number" sends the product to the owner's approval list, marked as reported, instead of only copying a message.
+function reportTarget(kind, key) {
+  const fm = foodMap(), codeOf = id => Object.keys(state.barcodes || {}).find(c => state.barcodes[c] === id);
+  if (kind === 'brand') { const r = brandRecord(ui.scan.code) || OFF_CACHE[ui.scan.code]; return r ? { code: ui.scan.code, rec: r.slice(0, 21) } : null; }
+  let f = null, code = '';
+  if (kind === 'scan') { f = foodForCode(ui.scan.code); code = ui.scan.code; }
+  else if (kind === 'pick') { f = fm[ui.fa.pick]; code = f ? codeOf(f.id) : ''; }
+  else if (kind === 'entry') { const meal = state.meals.find(m => m.id === String(key || '').split('|')[2]); if (meal && meal.items.length === 1) { f = fm[meal.items[0].foodId]; code = f ? codeOf(f.id) : ''; } }
+  const rec = f && code ? foodToRec(code, f) : null;
+  return rec ? { code, rec } : null;
+}
+async function cloudReportWrong(kind, key) {
+  if (!CLOUD.url || !CLOUD.key) return false;
+  const t = reportTarget(kind, key); if (!t || !validRec(t.rec)) return false;
+  try { await cloudFetch('rest/v1/rpc/report_food', { method: 'POST', body: { p_code: t.code, p_rec: t.rec, p_source: 'reported' } }, cloudSignedIn()); return true; }
+  catch (e) { return false; }
 }
 function cloudShareSoon() { if (cloudSignedIn()) { clearTimeout(CL.shareTimer); CL.shareTimer = setTimeout(cloudShareNew, 1500); } }
 async function cloudShareNew() {
@@ -4258,9 +4312,55 @@ function labelRepair() {
   return changed;
 }
 setTimeout(labelRepair, 0);
+function dataRepair() {
+  let changed = 0;
+  for (const id of new Set(Object.values(state.barcodes || {}))) {
+    const f = state.customFoods.find(x => x.id === id); if (!f) continue;
+    const a = /^custom-(usda|off|shared)-/.test(id) && labelRounding(f), b = produceFill(f);
+    if (a || b) changed++;
+  }
+  if (changed) { saveState(); try { render(); } catch (e) { /* starting up */ } }
+  return changed;
+}
+setTimeout(dataRepair, 0);
 const brandDate = rec => { const [y, m] = rec[18].split('-').map(Number); return new Date(y, m - 1, 1); };
 const brandMonthsOld = (rec, now) => { const d = brandDate(rec), n = now || new Date(); return (n.getFullYear() - d.getFullYear()) * 12 + (n.getMonth() - d.getMonth()); };
 const brandDateText = rec => brandDate(rec).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+// Raw produce sold with a barcode (a bag of potatoes, onions, apples): the product data often lists only calories and
+// the big three, so potassium, vitamins and the rest showed "no data". Those are the same as the USDA's own entry for
+// that raw food, so any number the product data leaves blank is filled from it. Numbers the product does list win.
+// Only plain raw produce: anything cooked, seasoned, canned, frozen, dried, a juice, chips or a mix is left alone.
+const PRODUCE = [[/sweet ?potato|yam/i, 2346404], [/yukon|gold(en)? potato|potato.*gold/i, 2346403], [/red potato|potato.*red/i, 2346402], [/potato/i, 2346401],
+  [/banana/i, 1105314], [/pineapple/i, 2346398], [/apple/i, 171688], [/yellow onion|onion.*yellow/i, 790646], [/red onion|onion.*red/i, 790577], [/white onion|onion.*white/i, 1104962], [/onion/i, 790646],
+  [/baby carrot/i, 2258587], [/carrot/i, 2258586], [/romaine/i, 2346389], [/iceberg/i, 2346388], [/lettuce/i, 2346391], [/broccoli/i, 321900], [/cauliflower/i, 2685573],
+  [/celery/i, 2346405], [/cucumber/i, 2346406], [/green bean/i, 2346400], [/red bell|bell.*red/i, 2258590], [/yellow bell|bell.*yellow/i, 2258589], [/orange bell|bell.*orange/i, 2258591], [/bell pepper|green pepper/i, 2258588],
+  [/strawberr/i, 2346409], [/blueberr/i, 2346411], [/raspberr/i, 2346410], [/grape tomato|cherry tomato/i, 321360], [/red grape/i, 2346412], [/grape(?!fruit)/i, 2346413], [/avocado/i, 171705],
+  [/orange/i, 746771], [/pear/i, 746773], [/peach/i, 325430], [/cherr/i, 2346399], [/kiwi/i, 327046], [/kale/i, 323505], [/zucchini/i, 2685568], [/butternut/i, 2685570],
+  [/cabbage/i, 2346407], [/garlic/i, 1104647], [/asparagus/i, 168389]];
+const PROCESSED = /chip|fries|fried|frozen|canned|mash|season|sauce|juice|dried|dehydrat|flake|flour|salad kit|kit|soup|bar\b|snack|candy|cake|pie|bread|muffin|cookie|cracker|cereal|yogurt|smoothie|puree|baby ?food|cooked|roasted|baked|instant|powder|jam|jelly|butter|oil|vinaigrette|dressing|& |\band\b|with /i;
+function produceFill(food) {
+  const name = String(food && food.name || '');
+  if (!name || PROCESSED.test(name)) return false;
+  const hit = PRODUCE.find(([re]) => re.test(name)), g = hit && USDA_BY_FDC[hit[1]];
+  if (!g) return false;
+  let changed = false;
+  for (const k of ['na', 'k', 'su', 'fib', 'sat', 'cho']) if (food[k] == null && g[k] != null) { food[k] = g[k]; changed = true; }
+  if (Array.isArray(g.mn)) {
+    const mn = Array.isArray(food.mn) ? food.mn.slice() : MN_KEYS.map(() => null);
+    g.mn.forEach((v, i) => { if (mn[i] == null && v != null) { mn[i] = v; changed = true; } });
+    if (changed) food.mn = mn;
+  }
+  return changed;
+}
+// What the package itself prints: under 5 calories a serving is "0", and under 0.5 g of protein, carbs or fat is "0 g".
+// A diet soda measured at 0.2 kcal per 100 mL used to show as 1 calorie a bottle while its label says 0.
+function labelRounding(food) {
+  const g = food && food.serving && food.serving.grams > 0 ? food.serving.grams : 0; if (!g) return false;
+  let changed = false;
+  if (food.kcal > 0 && food.kcal * g / 100 < 5) { food.kcal = 0; changed = true; }
+  for (const k of ['p', 'c', 'f']) if (food[k] > 0 && food[k] * g / 100 < 0.5) { food[k] = 0; changed = true; }
+  return changed;
+}
 function brandFood(rec) {
   const food = { id: 'custom-usda-' + rec[0], name: rec[1].slice(0, 80), custom: true, kcal: rec[5], p: rec[6], c: rec[7], f: rec[8] };
   food.serving = { label: (rec[19] || '1 serving').slice(0, 30), grams: rec[3] };
@@ -4273,6 +4373,7 @@ function brandFood(rec) {
   const mn = MN_KEYS.map(() => null);
   [['vd', 17], ['ca', 15], ['fe', 16]].forEach(([k, x]) => { if (rec[x] != null) mn[MN_KEYS.indexOf(k)] = rec[x]; });
   if (mn.some(v => v !== null)) food.mn = mn;
+  labelRounding(food); produceFill(food);
   return food;
 }
 /* ---------- Open Food Facts: a live, free lookup for barcodes the snapshotted USDA list does not happen to have ----------
@@ -4349,6 +4450,7 @@ function sendReport(type, barcode, name, details) {
   } catch (e) { return false; }
 }
 function reportMiss(code) {
+  cloudReportMissing(code);
   let sent = {};
   try { sent = JSON.parse(localStorage.getItem('mp-reported') || '{}') || {}; } catch (e) { sent = {}; }
   if (sent[code]) return;
@@ -6070,7 +6172,10 @@ document.addEventListener('click', e => {
   else if (a === 'products-cancel') { ui.help.products = null; render(); }
   else if (a === 'help-copytext') copyText(ui.help.text, 'Copied.');
   else if (a === 'support-copy') copyText(supportInfo(), 'Copied the support info. Paste it in a message.');
-  else if (a === 'report') copyText(reportText(el.dataset.kind, el.dataset.key), 'Copied. Paste it in a message and say what looks wrong.');
+  else if (a === 'report') {
+    const kind = el.dataset.kind, key = el.dataset.key;
+    cloudReportWrong(kind, key).then(ok => { if (ok) toast('Thanks \u2014 sent to the person who runs this site, to check against the package.'); else copyText(reportText(kind, key), 'Copied. Paste it in a message and say what looks wrong.'); });
+  }
   else if (a === 'repeat-yesterday-slot') repeatYesterdaySlot(el.dataset.slot);
   else if (a === 'repeat-entry') repeatEntry(el.dataset.date, el.dataset.slot, el.dataset.meal, 1);
   else if (a === 'fa-pin') pinFood(el.dataset.id);
@@ -6314,7 +6419,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.05-5';
+const APP_VERSION = '2026.10.07-1';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
