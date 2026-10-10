@@ -3187,7 +3187,7 @@ function applyRemote(incoming) {
       if (now) SYNC.remote[id] = canon(now);
     }
   }
-  if (changed) { persistLocal(); refreshAfterRemote(); labelRepair(); }
+  if (changed) { persistLocal(); refreshAfterRemote(); labelRepair(); dataRepair(); }   // a device still on an older version can sync the old numbers back: correct them again
   if (conflict) scheduleSync();
 }
 
@@ -3204,7 +3204,7 @@ function firstConnect(incoming) {
   ids.forEach(id => { SYNC.remote[id] = canon(incoming[id]); });
   try { localStorage.setItem(flag, '1'); } catch (e) { /* ignore */ }
   SYNC.ready = true;
-  labelRepair();
+  labelRepair(); dataRepair();
   persistLocal();
   render();
   flushSync();                                                    // uploads anything the database does not have yet
@@ -4337,7 +4337,9 @@ const PRODUCE = [[/sweet ?potato|yam/i, 2346404], [/yukon|gold(en)? potato|potat
   [/strawberr/i, 2346409], [/blueberr/i, 2346411], [/raspberr/i, 2346410], [/grape tomato|cherry tomato/i, 321360], [/red grape/i, 2346412], [/grape(?!fruit)/i, 2346413], [/avocado/i, 171705],
   [/orange/i, 746771], [/pear/i, 746773], [/peach/i, 325430], [/cherr/i, 2346399], [/kiwi/i, 327046], [/kale/i, 323505], [/zucchini/i, 2685568], [/butternut/i, 2685570],
   [/cabbage/i, 2346407], [/garlic/i, 1104647], [/asparagus/i, 168389]];
-const PROCESSED = /chip|fries|fried|frozen|canned|mash|season|sauce|juice|dried|dehydrat|flake|flour|salad kit|kit|soup|bar\b|snack|candy|cake|pie|bread|muffin|cookie|cracker|cereal|yogurt|smoothie|puree|baby ?food|cooked|roasted|baked|instant|powder|jam|jelly|butter|oil|vinaigrette|dressing|& |\band\b|with /i;
+// Bags of plain potatoes are often named "Red & Gold Potatoes" or "Butter Blush Little Potatoes": an "&" or a variety
+// name is not processing, so only real processing words count here.
+const PROCESSED = /chip|fries|fried|frozen|canned|mash|season|sauce|juice|dried|dehydrat|flake|flour|kit\b|soup|\bbar\b|snack|candy|cake|\bpies?\b|bread|muffin|cookie|cracker|cereal|yogurt|smoothie|puree|baby ?food|cooked|roasted|baked|instant|powder|\bjam\b|jelly|peanut butter|buttered|\boil\b|vinaigrette|dressing|\btots?\b|hash ?brown|wedge|au gratin|scallop|casserole|salad\b/i;
 function produceFill(food) {
   const name = String(food && food.name || '');
   if (!name || PROCESSED.test(name)) return false;
@@ -6419,7 +6421,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.07-1';
+const APP_VERSION = '2026.10.09-1';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
