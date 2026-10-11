@@ -209,6 +209,9 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .my-acts .link { font-size: 0.82rem; white-space: nowrap; }
 .acct { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0; background: var(--surface); }
 .acct h3 { margin: 0 0 6px; }
+.lt-box { border: 1px dashed var(--accent); border-radius: 10px; padding: 8px 10px; margin: 0 0 10px; background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.lt-box textarea { width: 100%; font-size: 16px; }
+.miss-link { font-size: 0.8rem; }
 .um-ask { font-size: 0.85rem; display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
 .q-list { list-style: none; padding: 0; margin: 8px 0 0; } .q-list li { border-top: 1px solid var(--line); padding: 8px 0; }
 .q-h { margin: 14px 0 4px; font-size: 1rem; } .q-rep { color: #b5533c; }
@@ -2649,6 +2652,7 @@ function viewPlan() {
         '<button class="link" data-action="copy-meal" data-meal="' + esc(meal.id) + '" aria-label="Copy ' + esc(meal.name) + '">Copy</button>' +
         // A scanned or label-entered food logged on its own: its numbers can be fixed right here.
         (meal.items.length === 1 && /^custom-/.test(meal.items[0].foodId) && foodMap()[meal.items[0].foodId] ? '<button class="link" data-action="fix-open" data-id="' + esc(meal.items[0].foodId) + '" aria-label="Fix the numbers for ' + esc(meal.name) + '">Fix</button>' : '') +
+        (meal.items.length === 1 && /^custom-/.test(meal.items[0].foodId) && missingNutrients(foodMap()[meal.items[0].foodId]).length >= 2 ? '<button class="link miss-link" data-action="fix-open" data-lt="1" data-id="' + esc(meal.items[0].foodId) + '" aria-label="Fill in missing ' + esc(missingNutrients(foodMap()[meal.items[0].foodId]).join(', ')) + ' from the label">Fill from label</button>' : '') +
         '<button class="link danger" data-action="remove-group" data-date="' + ui.date + '" data-slot="' + id + '" data-id="' + esc(meal.id) + '" aria-label="Remove ' + esc(meal.name) + ' from ' + name + '">Remove</button></span></div></li>' + factsRowHtml(ui.date, id, meal, g.n);
     }).join('');
     const options = slotOptionsHtml(id);
@@ -4667,6 +4671,61 @@ function fixSave() {
   toast('Fixed ' + fresh.name + (shared ? '. The shared list is updated for everyone.' : '.'), () => { const b = JSON.parse(before); state.customFoods = b.foods; state.meals = b.meals; state.barcodes = b.barcodes; saveState(); render(); });
 }
 
+// ---------- reading a Nutrition Facts label from text ----------
+// The text comes from the iPhone keyboard's "Scan Text" (the camera reads the label straight into the box), from Live
+// Text copy and paste, or typed. Real labels and camera text are messy: "Total Fat 7g 9%", "Protein <1g", "Og" read
+// for "0g", "1,150mg", two columns. Every number is taken from the FIRST column (the one matching "Serving size").
+// A % Daily Value alone (older labels) is turned into an amount with the current Daily Values.
+function parseLabelText(raw) {
+  let t = ' ' + String(raw || '').replace(/[  ]/g, ' ').replace(/\r/g, '') + ' ';
+  t = t.replace(/(\d),(\d{3})/g, '$1$2')                                // 1,150mg
+       .replace(/\bO(?=\s?(g|mg|mcg|µg)\b)/g, '0').replace(/\bl(?=\s?(g|mg)\b)/g, '1')   // camera text: "Og" "lg"
+       .replace(/less than\s*/gi, '<').replace(/\s+/g, ' ');
+  const num = v => { v = String(v).trim(); if (/^</.test(v)) { const n = parseFloat(v.slice(1)) || 1; return String(n === 1 ? 0.5 : n / 2); } return String(parseFloat(v)); };
+  const amt = '(<\\s*\\d+(?:\\.\\d+)?|\\d+(?:\\.\\d+)?)';
+  const grab = (re, unit) => { const m = new RegExp(re + '\\s*:?\\s*' + amt + '\\s*' + unit + '\\b', 'i').exec(t); return m ? num(m[1]) : ''; };
+  const pct = (re, dv) => { const m = new RegExp(re + '\\s*:?\\s*(\\d+(?:\\.\\d+)?)\\s*%', 'i').exec(t); return m ? String(Math.round(parseFloat(m[1]) * dv) / 100) : ''; };
+  const F = {};
+  const sv = /serving size\s*:?\s*([^()%]*?)\s*\(\s*(?:about\s*)?(\d+(?:\.\d+)?)\s*(g|ml)\s*\)/i.exec(t) || /serving size\s*:?\s*(\d+(?:\.\d+)?)\s*(g|ml)\b/i.exec(t);
+  if (sv) { if (sv.length === 4) { F.servingLabel = sv[1].trim().slice(0, 30); F.servingG = String(parseFloat(sv[2])); } else { F.servingLabel = sv[1] + ' ' + sv[2]; F.servingG = String(parseFloat(sv[1])); } F.basis = 'serving'; }
+  const cal = /calories\s*:?\s*(\d{1,4})(?!\s*(?:a day|calories))/i.exec(t.replace(/calories from fat\s*\d+/i, ''));
+  if (cal) F.kcal = cal[1];
+  F.f = grab('total fat', 'g'); F.sat = grab('sat(?:urated|\\.)?\\s*fat', 'g');
+  F.cho = grab('cholesterol', 'mg'); F.na = grab('sodium', 'mg');
+  F.c = grab('total carb(?:ohydrates?|s|\\.)?', 'g') || grab('carbohydrates?', 'g');
+  F.fib = grab('(?:dietary\\s*)?fiber', 'g');
+  F.su = grab('total sugars', 'g') || (() => { const keep = t; t = t.replace(/(includes\s*)?[<\d.\s]*g?\s*added sugars?/gi, ' '); const v = grab('sugars', 'g'); t = keep; return v; })();
+  F.p = grab('protein', 'g');
+  F.vd = grab('vit(?:amin|\\.)?\\s*d\\d?', '(?:mcg|µg)') || (() => { const iu = grab('vit(?:amin|\\.)?\\s*d\\d?', 'iu'); return iu ? String(Math.round(parseFloat(iu) / 40 * 10) / 10) : pct('vit(?:amin|\\.)?\\s*d\\d?', 20); })();
+  F.ca = grab('calcium', 'mg') || pct('calcium', 1300);
+  F.fe = grab('iron', 'mg') || pct('iron', 18);
+  F.k = grab('potassium', 'mg') || pct('potassium', 4700);
+  Object.keys(F).forEach(k => { if (F[k] === '' || F[k] === 'NaN') delete F[k]; });
+  return F;
+}
+const LT_NAMES = { kcal: 'calories', p: 'protein', c: 'carbs', f: 'fat', sat: 'saturated fat', cho: 'cholesterol', na: 'sodium', fib: 'fiber', su: 'sugars', vd: 'vitamin D', ca: 'calcium', fe: 'iron', k: 'potassium', servingG: 'serving size' };
+// What a saved food is missing from the bottom half of the label (the part databases often leave out).
+function missingNutrients(f) {
+  if (!f) return [];
+  const mn = k => Array.isArray(f.mn) ? f.mn[MN_KEYS.indexOf(k)] : null;
+  return [['potassium', f.k], ['sodium', f.na], ['vitamin D', mn('vd')], ['calcium', mn('ca')], ['iron', mn('fe')], ['fiber', f.fib], ['sugars', f.su]].filter(([, v]) => v == null).map(([n]) => n);
+}
+function labelTextApply(text) {
+  const F = ui.scan.form; if (!F) return;
+  F.lt = text;
+  const got = parseLabelText(text), replace = !!F.ltAll, filled = [], kept = [];
+  for (const [k, v] of Object.entries(got)) {
+    if (k === 'basis') { if (replace || !F.servingG) F.basis = v; continue; }
+    if (k === 'servingLabel') { if (replace || !F.servingLabel) F.servingLabel = v; continue; }
+    if (replace || F[k] === '' || F[k] == null) { if (F[k] !== v) filled.push(k); F[k] = v; } else if (String(F[k]) !== String(v)) kept.push(k);
+  }
+  F.ltMsg = Object.keys(got).length < 2 ? 'Could not find label lines in that text yet. Point the camera at the Nutrition Facts box, with "Calories" and "Protein" in view.'
+    : (filled.length ? '✓ Filled in: ' + filled.map(k => LT_NAMES[k] || k).join(', ') + '.' : '✓ Read the label; nothing was missing.') +
+      (kept.length ? ' Kept what was already here for ' + kept.map(k => LT_NAMES[k] || k).join(', ') + ' (tick “Replace” to use the label instead).' : '') + ' Check, then save.';
+  render();
+  const b = $('ltText'); if (b && b.focus) { /* keep the place but do not reopen the keyboard */ }
+}
+
 // Teaching the app a new product from the numbers on its label.
 const blankForm = () => ({ name: '', state: '', basis: 'serving', servingLabel: '', servingG: '', kcal: '', p: '', c: '', f: '', na: '', k: '', vd: '', ca: '', fe: '', su: '', fib: '', sat: '', cho: '', note: '' });
 function scanSaveForm() {
@@ -4725,6 +4784,11 @@ function formHtml(F, o) {
   const per = F.basis === 'serving' ? 'serving' : '100 g';
   return '<div class="ai-card" style="margin-top:12px">' +
     (F.note ? '<p class="ai-note" style="margin:0 0 8px">' + esc(F.note) + '</p>' : '') +
+    '<div class="lt-box"><label for="ltText" style="margin-top:0"><strong>Fill in from the label</strong></label>' +
+    '<p class="muted small" style="margin:0 0 6px">On an iPhone: tap the box, then <strong>Scan Text</strong> on the keyboard (or press and hold the box \u2192 Scan Text), point at the Nutrition Facts and tap <strong>Insert</strong>. Or paste the label\u2019s text.</p>' +
+    '<textarea id="ltText" data-lt="1" rows="3" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Tap here, then Scan Text">' + esc(F.lt || '') + '</textarea>' +
+    '<label class="keep" style="margin:4px 0 0"><input type="checkbox" data-lt="all"' + (F.ltAll ? ' checked' : '') + '> Replace numbers already here with the label\u2019s</label>' +
+    (F.ltMsg ? '<p class="ai-note" role="status" style="margin:6px 0 0">' + esc(F.ltMsg) + '</p>' : '') + '</div>' +
     '<label for="scanF-name" style="margin-top:0">Product name</label><input id="scanF-name" data-scan="f:name" maxlength="60" value="' + esc(F.name) + '" placeholder="Chocolate chip granola bar">' +
     '<div class="ai-row"><div><label for="scanF-state">As the package describes it</label><select id="scanF-state" data-scan="f:state">' + optionsHtml([['', 'Not stated'], ['raw', 'Raw (weigh before cooking)'], ['dry', 'Dry (weigh before cooking)'], ['cooked', 'Cooked'], ['ready', 'Ready to eat']], F.state) + '</select></div><div><label for="scanF-basis">The label numbers are per</label><select id="scanF-basis" data-scan="f:basis">' +
     '<option value="serving"' + (F.basis === 'serving' ? ' selected' : '') + '>One serving</option><option value="100g"' + (F.basis === '100g' ? ' selected' : '') + '>100 g</option></select></div>' +
@@ -4882,6 +4946,7 @@ function viewScan() {
         '<div class="builder-total"><div class="entry-name">' + n0(t.kcal) + ' kcal</div>' + macroChips(t) + '</div>' +
         '<p style="margin:6px 0 0"><button class="link" data-action="facts-toggle" data-key="scan" aria-expanded="' + !!ui.facts.scan + '">' + (ui.facts.scan ? 'Hide' : 'Show') + ' nutrition facts for this amount</button></p>' +
         (ui.facts.scan ? factsHtml(t, { title: food.name, sub: n0(grams) + ' g', count: 1, report: { kind: 'scan' } }) : '') +
+        (missingNutrients(food).length >= 2 ? '<p class="ai-note" style="margin:8px 0 0">Missing ' + esc(missingNutrients(food).join(', ')) + '. <button class="link" data-action="fix-open" data-lt="1" data-id="' + esc(food.id) + '">Fill in from the label</button> (Scan Text reads it in seconds).</p>' : '') +
         '<div class="ai-actions"><button class="btn primary big" data-action="scan-add">Add to ' + esc(label) + '</button></div></article>';
     } else if (brandRecord(S.code) && S.brandSkip !== S.code) {
       result += brandCardHtml(brandRecord(S.code));
@@ -4997,7 +5062,7 @@ function scanClick(a, el) {
     const rec = OFF_CACHE[ui.scan.code]; if (!rec) return;
     ui.scan.form = foodToForm(offFood(rec));
     ui.scan.form.note = 'Already filled in from ' + srcName(rec) + '. Compare every number with your package\u2019s Nutrition Facts (same column as the serving size), fix any that differ, then save.';
-    render(); const el = $('scanF-kcal'); try { if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' }); } catch (e) { /* harmless */ }
+    render(); const el = $('ltText'); try { if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' }); if (el) el.focus(); } catch (e) { /* harmless */ }
   }
   else if (a === 'scan-off-skip') { ui.scan.offSkip = ui.scan.code; render(); }
   else if (a === 'scan-lookup') {
@@ -6152,7 +6217,7 @@ document.addEventListener('click', e => {
 
   else if (a.startsWith('ai-')) { aiClick(a, el); }
   else if (a.startsWith('scan-')) { scanClick(a, el); }
-  else if (a === 'fix-open') { fixOpen(el.dataset.id); }
+  else if (a === 'fix-open') { fixOpen(el.dataset.id); if (el.dataset.lt) { const b = $('ltText'); try { if (b) { b.scrollIntoView({ block: 'center' }); b.focus(); } } catch (e) { /* harmless */ } } }
   else if (a === 'fix-save') { fixSave(); }
   else if (a === 'fix-cancel') { fixClose(); }
   else if (a.startsWith('slot-')) { slotScanClick(a, el); }
@@ -6339,6 +6404,7 @@ document.addEventListener('change', e => {
   if (t.dataset && t.dataset.rdi) { rdiSet(t.dataset.rdi, t.value); return; }
   if (t.dataset && t.dataset.wl) { wlChange(t); return; }
   if (t.dataset && t.dataset.ai) { aiChange(t); return; }
+  if (t.dataset && t.dataset.lt === 'all') { if (ui.scan.form) { ui.scan.form.ltAll = !!t.checked; if (ui.scan.form.lt) labelTextApply(ui.scan.form.lt); } return; }
   if (t.dataset && t.dataset.scan) { scanChange(t); return; }
   if (t.dataset && t.dataset.scanbulk) { scanBulkChange(t); return; }
   if (t.dataset && t.dataset.quick) { quickChange(t); return; }
@@ -6403,6 +6469,12 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.dataset && t.dataset.ai) { aiInput(t); return; }
   if (t.dataset && t.dataset.cloud) { CL[t.dataset.cloud] = t.value; return; }
+  if (t.dataset && t.dataset.lt === '1') {
+    // Scan Text and paste put the whole label in at once: read it right away. Typing by hand waits for a pause.
+    const v = t.value, looksLikeLabel = v.length > 30 && /calor|protein|sodium|total fat/i.test(v);
+    if (ui.scan.form) ui.scan.form.lt = v;
+    clearTimeout(SCAN.ltTimer); SCAN.ltTimer = setTimeout(() => labelTextApply(v), looksLikeLabel ? 150 : 1200); return;
+  }
   if (t.dataset && t.dataset.scan) { scanInput(t); return; }
   if (t.dataset && t.dataset.scanbulk) { scanBulkInput(t); return; }
   if (t.dataset && t.dataset.quick) { quickInput(t); return; }
@@ -6421,7 +6493,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.09-1';
+const APP_VERSION = '2026.10.11-1';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
