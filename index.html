@@ -212,6 +212,8 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .lt-box { border: 1px dashed var(--accent); border-radius: 10px; padding: 8px 10px; margin: 0 0 10px; background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .lt-box textarea { width: 100%; font-size: 16px; }
 .miss-link { font-size: 0.8rem; }
+.miss-ask { border: 2px solid var(--accent); border-radius: 12px; padding: 10px 12px; margin: 0 0 10px; background: color-mix(in srgb, var(--accent) 7%, transparent); font-size: 0.92rem; }
+.miss-acts { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 .um-ask { font-size: 0.85rem; display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
 .q-list { list-style: none; padding: 0; margin: 8px 0 0; } .q-list li { border-top: 1px solid var(--line); padding: 8px 0; }
 .q-h { margin: 14px 0 4px; font-size: 1rem; } .q-rep { color: #b5533c; }
@@ -1220,10 +1222,11 @@ function scanAutoAdd(f, live) {
   if (!r) return false;
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(ui.scan.slot) + (live ? '. Scanning the next one…' : '. Ready for the next one.') });
   const id = noteAdded(r);
+  missAskFor(f, r);
   render();
   if (!live) toast('Added ' + r.food + ' to ' + SLOT_LABEL(r.slot) + '.', () => undoAdded(id));   // the camera shows its own list, with Undo
   // A product nobody has checked against its package yet is still logged (scanning must never get in the way), but says so.
-  announce(true, 'Added ' + r.food, addedDetail(r) + (foodTrusted(f) ? '' : ' \u00b7 numbers not checked yet'), live);
+  announce(true, 'Added ' + r.food, addedDetail(r) + (foodTrusted(f) ? '' : ' \u00b7 numbers not checked yet') + (ui.missAsk && ui.missAsk.id === f.id ? ' \u00b7 missing ' + ui.missAsk.miss.join(', ') + ': see below' : ''), live);
   if (live) { const el = $('scanMsg'); if (el) el.textContent = '\u2713 Added \u2014 scanning the next one in a moment'; resumeLive(HOLD_MS); }
   return true;
 }
@@ -2652,7 +2655,7 @@ function viewPlan() {
         '<button class="link" data-action="copy-meal" data-meal="' + esc(meal.id) + '" aria-label="Copy ' + esc(meal.name) + '">Copy</button>' +
         // A scanned or label-entered food logged on its own: its numbers can be fixed right here.
         (meal.items.length === 1 && /^custom-/.test(meal.items[0].foodId) && foodMap()[meal.items[0].foodId] ? '<button class="link" data-action="fix-open" data-id="' + esc(meal.items[0].foodId) + '" aria-label="Fix the numbers for ' + esc(meal.name) + '">Fix</button>' : '') +
-        (meal.items.length === 1 && /^custom-/.test(meal.items[0].foodId) && missingNutrients(foodMap()[meal.items[0].foodId]).length >= 2 ? '<button class="link miss-link" data-action="fix-open" data-lt="1" data-id="' + esc(meal.items[0].foodId) + '" aria-label="Fill in missing ' + esc(missingNutrients(foodMap()[meal.items[0].foodId]).join(', ')) + ' from the label">Fill from label</button>' : '') +
+        (meal.items.length === 1 && /^custom-/.test(meal.items[0].foodId) && missingBottom(foodMap()[meal.items[0].foodId]).length ? '<button class="link miss-link" data-action="fix-open" data-lt="1" data-id="' + esc(meal.items[0].foodId) + '" aria-label="Fill in missing ' + esc(missingBottom(foodMap()[meal.items[0].foodId]).join(', ')) + ' from the label">Fill from label</button>' : '') +
         '<button class="link danger" data-action="remove-group" data-date="' + ui.date + '" data-slot="' + id + '" data-id="' + esc(meal.id) + '" aria-label="Remove ' + esc(meal.name) + ' from ' + name + '">Remove</button></span></div></li>' + factsRowHtml(ui.date, id, meal, g.n);
     }).join('');
     const options = slotOptionsHtml(id);
@@ -2666,6 +2669,7 @@ function viewPlan() {
       '<button class="link" data-action="slot-kbd" data-slot="' + id + '" aria-label="Scan into ' + name + ' with a Bluetooth scanner">\u2328\ufe0e Scanner</button>' +
       '<button class="link" data-action="slot-copy" data-slot="' + id + '" aria-expanded="' + (ui.slotCopy === id) + '" aria-label="Quick copy for ' + name + '">\ud83d\udccb Quick copy</button></div>' +
       (ui.slotCopy === id ? slotCopyHtml(id, name) : '') +
+      missAskHtml(id) +
       (kbdSlot() === id
         ? '<div class="sc-ready"><i class="sc-dot" aria-hidden="true"></i><input id="slotKbd" class="sc-in" inputmode="none" autocomplete="off" enterkeyhint="done" placeholder="Ready: scans go to ' + name + '" aria-label="Scanner ready: scans go into ' + name + '"><button class="link" data-action="slot-kbd-done">Done</button></div>'
         : '') +
@@ -4600,6 +4604,7 @@ function scanAddToPlan() {
   if (!r) return;
   Object.assign(ui.scan, { code: '', typed: '', form: null, msg: 'Added ' + r.name + ' to ' + SLOT_LABEL(slot) + '. Scan the next one whenever you are ready.' });
   const id = noteAdded(r);
+  missAskFor(f, r);
   render();
   announce(true, 'Added ' + r.food, addedDetail(r), false);
   toast('Added ' + r.food + ' to ' + SLOT_LABEL(slot) + '.', () => undoAdded(id));
@@ -4702,6 +4707,25 @@ function parseLabelText(raw) {
   F.k = grab('potassium', 'mg') || pct('potassium', 4700);
   Object.keys(F).forEach(k => { if (F[k] === '' || F[k] === 'NaN') delete F[k]; });
   return F;
+}
+// The bottom half of every US label (required since 2020): what barcode databases most often leave out.
+function missingBottom(f) {
+  if (!f || !/^custom-/.test(f.id || '') || f.ok) return [];          // checked against its label: what is blank is not on the label
+  const mn = k => Array.isArray(f.mn) ? f.mn[MN_KEYS.indexOf(k)] : null;
+  return [['potassium', f.k], ['vitamin D', mn('vd')], ['calcium', mn('ca')], ['iron', mn('fe')]].filter(([, v]) => v == null).map(([n]) => n);
+}
+const missSkipped = () => { try { return JSON.parse(localStorage.getItem('mp-missask-skip') || '{}') || {}; } catch (e) { return {}; } };
+function missAskFor(f, r) {
+  const miss = missingBottom(f);
+  ui.missAsk = miss.length && !missSkipped()[f.id] ? { id: f.id, name: f.name, miss, slot: r ? r.slot : ui.scan.slot, date: r ? r.date : ui.date } : null;
+}
+function missAskHtml(where) {
+  const A = ui.missAsk; if (!A) return '';
+  if (where !== 'scan' && !(A.slot === where && A.date === ui.date)) return '';
+  const f = foodMap()[A.id], miss = missingBottom(f); if (!f || !miss.length) { ui.missAsk = null; return ''; }
+  return '<div class="miss-ask" role="status"><strong>' + esc(f.name.length > 40 ? f.name.slice(0, 39) + '\u2026' : f.name) + '</strong> was added, but its barcode data is missing <strong>' + esc(miss.join(', ')) + '</strong>.' +
+    '<div class="miss-acts"><button class="btn primary" data-action="miss-fill">\ud83d\udcf7 Scan the label</button><button class="link" data-action="miss-later">Not now</button><button class="link" data-action="miss-never">Don\u2019t ask for this one</button></div>' +
+    '<p class="muted small" style="margin:4px 0 0">Takes about 10 seconds with the iPhone\u2019s Scan Text, and fixes it for everyone.</p></div>';
 }
 const LT_NAMES = { kcal: 'calories', p: 'protein', c: 'carbs', f: 'fat', sat: 'saturated fat', cho: 'cholesterol', na: 'sodium', fib: 'fiber', su: 'sugars', vd: 'vitamin D', ca: 'calcium', fe: 'iron', k: 'potassium', servingG: 'serving size' };
 // What a saved food is missing from the bottom half of the label (the part databases often leave out).
@@ -4873,6 +4897,7 @@ function myScanLog(id) {
   const r = logFood(f, hasServing ? 1 : 100, hasServing ? 1 : 0, ui.scan.slot);
   if (!r) return;
   const nid = noteAdded(r);
+  missAskFor(f, r);
   render();
   announce(true, 'Added ' + r.food, addedDetail(r), false);
   toast('Added ' + r.food + ' to ' + SLOT_LABEL(r.slot) + '.', () => undoAdded(nid));
@@ -4946,7 +4971,7 @@ function viewScan() {
         '<div class="builder-total"><div class="entry-name">' + n0(t.kcal) + ' kcal</div>' + macroChips(t) + '</div>' +
         '<p style="margin:6px 0 0"><button class="link" data-action="facts-toggle" data-key="scan" aria-expanded="' + !!ui.facts.scan + '">' + (ui.facts.scan ? 'Hide' : 'Show') + ' nutrition facts for this amount</button></p>' +
         (ui.facts.scan ? factsHtml(t, { title: food.name, sub: n0(grams) + ' g', count: 1, report: { kind: 'scan' } }) : '') +
-        (missingNutrients(food).length >= 2 ? '<p class="ai-note" style="margin:8px 0 0">Missing ' + esc(missingNutrients(food).join(', ')) + '. <button class="link" data-action="fix-open" data-lt="1" data-id="' + esc(food.id) + '">Fill in from the label</button> (Scan Text reads it in seconds).</p>' : '') +
+        (missingBottom(food).length ? '<p class="ai-note" style="margin:8px 0 0">Missing ' + esc(missingBottom(food).join(', ')) + '. <button class="link" data-action="fix-open" data-lt="1" data-id="' + esc(food.id) + '">Fill in from the label</button> (Scan Text reads it in seconds).</p>' : '') +
         '<div class="ai-actions"><button class="btn primary big" data-action="scan-add">Add to ' + esc(label) + '</button></div></article>';
     } else if (brandRecord(S.code) && S.brandSkip !== S.code) {
       result += brandCardHtml(brandRecord(S.code));
@@ -4963,7 +4988,7 @@ function viewScan() {
     }
   }
   return '<div class="scan"><div class="datebar"><h2>Scan a barcode</h2><label for="datePick" style="margin:0">Adding to</label>' +
-    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Day to add scanned foods to"></div>' + sessionCardHtml() + myScansHtml(label) + notRecHtml() +
+    '<input id="datePick" type="date" value="' + ui.date + '" aria-label="Day to add scanned foods to"></div>' + missAskHtml('scan') + sessionCardHtml() + myScansHtml(label) + notRecHtml() +
     (block && !block.retry
       ? '<div class="scan-actions"><label class="btn primary big" for="scanPhoto">Take a photo of the barcode</label><input type="file" id="scanPhoto" data-scan="photo" accept="image/*" capture="environment" class="sr-only">' +
         '<label class="btn big" for="scanPick">Choose a photo</label><input type="file" id="scanPick" data-scan="photo" accept="image/*" class="sr-only"></div>' +
@@ -6217,6 +6242,9 @@ document.addEventListener('click', e => {
 
   else if (a.startsWith('ai-')) { aiClick(a, el); }
   else if (a.startsWith('scan-')) { scanClick(a, el); }
+  else if (a === 'miss-fill') { const A = ui.missAsk; ui.missAsk = null; if (A) { SCAN.slotMode = null; fixOpen(A.id); const b = $('ltText'); try { if (b) { b.scrollIntoView({ block: 'center' }); b.focus(); } } catch (e) { /* harmless */ } } }
+  else if (a === 'miss-later') { ui.missAsk = null; render(); }
+  else if (a === 'miss-never') { const A = ui.missAsk; ui.missAsk = null; if (A) { const k = missSkipped(); k[A.id] = 1; try { localStorage.setItem('mp-missask-skip', JSON.stringify(k)); } catch (e) { /* this visit only */ } } render(); }
   else if (a === 'fix-open') { fixOpen(el.dataset.id); if (el.dataset.lt) { const b = $('ltText'); try { if (b) { b.scrollIntoView({ block: 'center' }); b.focus(); } } catch (e) { /* harmless */ } } }
   else if (a === 'fix-save') { fixSave(); }
   else if (a === 'fix-cancel') { fixClose(); }
@@ -6493,7 +6521,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.10.11-1';
+const APP_VERSION = '2026.10.11-2';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
