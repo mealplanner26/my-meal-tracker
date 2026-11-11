@@ -213,6 +213,7 @@ fieldset { min-width: 0; min-inline-size: 0; }   /* browsers give a fieldset a m
 .lt-box textarea { width: 100%; font-size: 16px; }
 .miss-link { font-size: 0.8rem; }
 .miss-ask { border: 2px solid var(--accent); border-radius: 12px; padding: 10px 12px; margin: 0 0 10px; background: color-mix(in srgb, var(--accent) 7%, transparent); font-size: 0.92rem; }
+.lt-photo { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 4px 0 0; }
 .lbl-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 0; }
 .miss-acts { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 .um-ask { font-size: 0.85rem; display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
@@ -4705,7 +4706,7 @@ function lblClose() {
 function lblView() {
   const day = parseKey(ui.date).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
   return '<div class="fixview"><div class="datebar"><h2>Scan the label</h2><button class="btn" data-action="lbl-cancel">Cancel</button></div>' +
-    '<p class="muted small" style="margin:4px 0 0">' + (ui.lbl.why ? esc(ui.lbl.why) + ' ' : '') + 'Read the Nutrition Facts instead of the barcode. It is saved as a food and one serving is added to your log.</p>' +
+    '<p class="muted small" style="margin:4px 0 0">' + (ui.lbl.why ? esc(ui.lbl.why) + ' ' : '') + 'Take a photo of the Nutrition Facts instead of the barcode. It is saved as a food and one serving is added to your log.</p>' +
     '<div class="ai-row" style="margin-top:8px"><div><label for="lblSlot">Add to</label><select id="lblSlot" data-scan="slot">' + optionsHtml(SLOTS, ui.scan.slot) + '</select></div><div><label>Day</label><p style="margin:6px 0 0"><strong>' + esc(day) + '</strong></p></div></div>' +
     formHtml(ui.scan.form, { save: 'lbl-save', cancel: 'lbl-cancel', saveLabel: 'Save and add to ' + SLOT_LABEL(ui.scan.slot), code: true }) + '</div>';
 }
@@ -4747,6 +4748,86 @@ function lblOfferHtml(where) {
   if (where !== 'scan' && !(O.slot === where && O.date === ui.date)) return '';
   return '<div class="miss-ask" role="status"><strong>Could not read that barcode.</strong> Scan it again, or read the label instead.' +
     '<div class="miss-acts"><button class="btn primary" data-action="lbl-open" data-slot="' + esc(O.slot) + '">\ud83d\udcf7 Scan the label instead</button><button class="link" data-action="lbl-offer-x">Dismiss</button></div></div>';
+}
+
+// Camera-photo text has its own misreads (the label's small "g" read as 9 or 0, "mg" as "mq", "Iron" as "\ron").
+// Applied only to text read from a photo; Scan Text and pasted text are left exactly as they are.
+function ocrFix(raw) {
+  return String(raw || '')
+    .replace(/\b(?:Stal|[SYI1l]otal|Tota[1I]|lotal)\b/g, 'Total')
+    .replace(/(?:[\\|]|\b[l1])ron\b/g, 'Iron')
+    .replace(/(^|[^a-z])(?:S?[ae][lt]urated|Satu?rated)\s+Fat/gim, '$1Saturated Fat')
+    .replace(/(\d)\s?mq\b/g, '$1mg')
+    .replace(/(\d)\s?(?:mceg|meg|mcq|mcy|mgc)\b/gi, '$1mcg')
+    .replace(/<\s?[il|]\s?g\b/g, '<1g')
+    .replace(/\((\d{2,4})9\.?(?=[\s)]|$)\)?/gm, '($1g)')
+    .replace(/((?:fat|carbohydrates?|carbs?|fiber|sugars|protein)\s*:?\s*<?\s*)(\d{1,3}(?:\.\d)?)([90q])(?![\d.]|\s*(?:g|mg|mcg|%))/gi, '$1$2g');
+}
+
+// ---------- reading the whole label from one photo, on the phone itself ----------
+// Scan Text picks up a few lines at a time. A photo is read all at once by Tesseract (open source, runs in the
+// browser; nothing is uploaded). It is loaded only when first used: the reader and its English data come from a CDN,
+// about 10 MB the first time, then kept by the browser. The text read lands in the label box and fills the form the
+// same way Scan Text does, and the person checks the numbers before saving.
+const OCR = { loading: null, busy: false, onStep: null };
+const OCR_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+function ocrLoad() {
+  if (OCR.loading) return OCR.loading;
+  OCR.loading = new Promise((res, rej) => {
+    if (window.Tesseract) { res(); return; }
+    const sc = document.createElement('script'); sc.src = OCR_SRC; sc.async = true;
+    sc.onload = () => (window.Tesseract ? res() : rej(new Error('reader missing')));
+    sc.onerror = () => rej(new Error('reader did not load'));
+    document.head.appendChild(sc);
+  }).then(() => window.Tesseract.createWorker('eng', 1, { logger: m => { try { if (OCR.onStep) OCR.onStep(m); } catch (e) { /* progress only */ } } }))
+    .then(async w => { await w.setParameters({ tessedit_pageseg_mode: '11' }); return w; })   // 11 = sparse text: label rows of different sizes, read one by one
+    .catch(e => { OCR.loading = null; throw e; });
+  return OCR.loading;
+}
+// The photo, ready to read: upright, gray, contrast stretched, about 2400 px on its long side.
+async function ocrCanvas(file) {
+  let img;
+  try { img = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch (e) {
+    img = await new Promise((res, rej) => { const u = URL.createObjectURL(file), im = new Image(); im.onload = () => { URL.revokeObjectURL(u); res(im); }; im.onerror = () => { URL.revokeObjectURL(u); rej(new Error('not an image')); }; im.src = u; });
+  }
+  const w0 = img.width, h0 = img.height, big = Math.max(w0, h0);
+  if (!big) throw new Error('not an image');
+  const k = big > 2400 ? 2400 / big : big < 1600 ? 1600 / big : 1;
+  const c = document.createElement('canvas'); c.width = Math.round(w0 * k); c.height = Math.round(h0 * k);
+  const g = c.getContext('2d'); g.drawImage(img, 0, 0, c.width, c.height);
+  const d = g.getImageData(0, 0, c.width, c.height), px = d.data, hist = new Uint32Array(256), n = px.length / 4;
+  for (let i = 0; i < px.length; i += 4) { const y = (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000 | 0; px[i] = y; hist[y]++; }
+  let lo = 0, hi = 255, acc = 0;
+  while (lo < 255 && (acc += hist[lo]) < n * 0.01) lo++;
+  acc = 0; while (hi > 0 && (acc += hist[hi]) < n * 0.01) hi--;
+  const span = Math.max(1, hi - lo);
+  for (let i = 0; i < px.length; i += 4) { const v = Math.max(0, Math.min(255, (px[i] - lo) * 255 / span)); px[i] = px[i + 1] = px[i + 2] = v; }
+  g.putImageData(d, 0, 0);
+  return c;
+}
+function ltStatus(msg) { const el = $('ltStatus'); if (el) { el.textContent = msg; el.hidden = !msg; } }
+async function ltPhoto(file) {
+  const F = ui.scan.form;
+  if (!file || !F || OCR.busy) return;
+  OCR.busy = true; F.ltMsg = ''; render();
+  ltStatus('Reading the label\u2026');
+  try {
+    const canvas = await ocrCanvas(file);
+    OCR.onStep = m => {
+      if (m.status === 'recognizing text') ltStatus('Reading the label\u2026 ' + Math.round((m.progress || 0) * 100) + '%');
+      else ltStatus('Getting the label reader ready (the first time it downloads, about 10 MB)\u2026');
+    };
+    const w = await ocrLoad();
+    const r = await w.recognize(canvas);
+    if (ui.scan.form !== F) return;                                    // the form was closed while it read
+    const text = ocrFix(r && r.data ? r.data.text : '');
+    const got = Object.keys(parseLabelText(text)).length;
+    labelTextApply((F.lt ? F.lt.replace(/\s+$/, '') + '\n' : '') + text);   // a second photo (say, the bottom half) adds to the first
+    if (got < 3) { F.ltMsg = 'Could not read enough of that photo. Get closer so the Nutrition Facts box fills the picture, hold the phone straight on, in good light (no glare), and try again.'; render(); }
+  } catch (e) {
+    if (ui.scan.form === F) { F.ltMsg = navigator.onLine === false || /load/.test(e && e.message || '') ? 'The label reader could not be downloaded. It needs a connection the first time. You can still use Scan Text, or type the numbers.' : 'Could not read that photo. Try again closer and straight on, or use Scan Text.'; render(); }
+  } finally { OCR.busy = false; OCR.onStep = null; ltStatus(''); }
 }
 
 // ---------- reading a Nutrition Facts label from text ----------
@@ -4797,8 +4878,8 @@ function missAskHtml(where) {
   if (where !== 'scan' && !(A.slot === where && A.date === ui.date)) return '';
   const f = foodMap()[A.id], miss = missingBottom(f); if (!f || !miss.length) { ui.missAsk = null; return ''; }
   return '<div class="miss-ask" role="status"><strong>' + esc(f.name.length > 40 ? f.name.slice(0, 39) + '\u2026' : f.name) + '</strong> was added, but its barcode data is missing <strong>' + esc(miss.join(', ')) + '</strong>.' +
-    '<div class="miss-acts"><button class="btn primary" data-action="miss-fill">\ud83d\udcf7 Scan the label</button><button class="link" data-action="miss-later">Not now</button><button class="link" data-action="miss-never">Don\u2019t ask for this one</button></div>' +
-    '<p class="muted small" style="margin:4px 0 0">Takes about 10 seconds with the iPhone\u2019s Scan Text, and fixes it for everyone.</p></div>';
+    '<div class="miss-acts"><button class="btn primary" data-action="miss-fill">\ud83d\udcf7 Photo of the label</button><button class="link" data-action="miss-later">Not now</button><button class="link" data-action="miss-never">Don\u2019t ask for this one</button></div>' +
+    '<p class="muted small" style="margin:4px 0 0">One photo of the Nutrition Facts fills it in, and fixes it for everyone.</p></div>';
 }
 const LT_NAMES = { kcal: 'calories', p: 'protein', c: 'carbs', f: 'fat', sat: 'saturated fat', cho: 'cholesterol', na: 'sodium', fib: 'fiber', su: 'sugars', vd: 'vitamin D', ca: 'calcium', fe: 'iron', k: 'potassium', servingG: 'serving size' };
 // What a saved food is missing from the bottom half of the label (the part databases often leave out).
@@ -4882,8 +4963,12 @@ function formHtml(F, o) {
   return '<div class="ai-card" style="margin-top:12px">' +
     (F.note ? '<p class="ai-note" style="margin:0 0 8px">' + esc(F.note) + '</p>' : '') +
     '<div class="lt-box"><label for="ltText" style="margin-top:0"><strong>Fill in from the label</strong></label>' +
-    '<p class="muted small" style="margin:0 0 6px">On an iPhone: tap the box, then <strong>Scan Text</strong> on the keyboard (or press and hold the box \u2192 Scan Text), point at the Nutrition Facts and tap <strong>Insert</strong>. Or paste the label\u2019s text.</p>' +
-    '<textarea id="ltText" data-lt="1" rows="3" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Tap here, then Scan Text">' + esc(F.lt || '') + '</textarea>' +
+    '<div class="lt-photo"><label class="btn primary" for="ltPhoto">\ud83d\udcf7 Take a photo of the label</label><input type="file" id="ltPhoto" data-lt="photo" accept="image/*" capture="environment" class="sr-only">' +
+    '<label class="link" for="ltPick">or choose a photo</label><input type="file" id="ltPick" data-lt="photo" accept="image/*" class="sr-only"></div>' +
+    '<p class="muted small" style="margin:4px 0 6px">Get close so the Nutrition Facts box fills the picture, straight on, no glare. The whole label is read at once, on your phone. Missed some? Take another photo of that part.</p>' +
+    '<p id="ltStatus" class="ai-note" role="status" style="margin:0 0 6px"' + (OCR.busy ? '>Reading the label\u2026' : ' hidden>') + '</p>' +
+    '<p class="muted small" style="margin:0 0 6px">Or tap the box, then <strong>Scan Text</strong> on the keyboard, point at the label and tap <strong>Insert</strong>. Or paste the label\u2019s text.</p>' +
+    '<textarea id="ltText" data-lt="1" rows="3" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="The label\u2019s text appears here">' + esc(F.lt || '') + '</textarea>' +
     '<label class="keep" style="margin:4px 0 0"><input type="checkbox" data-lt="all"' + (F.ltAll ? ' checked' : '') + '> Replace numbers already here with the label\u2019s</label>' +
     (F.ltMsg ? '<p class="ai-note" role="status" style="margin:6px 0 0">' + esc(F.ltMsg) + '</p>' : '') + '</div>' +
     '<label for="scanF-name" style="margin-top:0">Product name</label><input id="scanF-name" data-scan="f:name" maxlength="60" value="' + esc(F.name) + '" placeholder="Chocolate chip granola bar">' +
@@ -5078,7 +5163,7 @@ function viewScan() {
     '<label for="scanCode">Or type the number under the barcode</label>' +
     '<div class="scan-typerow"><input id="scanCode" data-scan="typed" inputmode="numeric" autocomplete="off" maxlength="16" placeholder="012345678905" value="' + esc(S.typed) + '"><button class="btn" data-action="scan-lookup">Look up</button></div>' +
     '<p class="muted small" style="margin:4px 0 0">A Bluetooth barcode scanner works here too: pair it, tap into this box, and scan \u2014 it types the number and looks it up for you, same as typing it in.</p>' +
-    '<div class="lbl-row"><button class="btn big" data-action="lbl-open">\ud83d\udcf7 Scan the label instead</button><span class="muted small">Barcode torn, wrinkled, or will not read? Read the Nutrition Facts with Scan Text.</span></div>' +
+    '<div class="lbl-row"><button class="btn big" data-action="lbl-open">\ud83d\udcf7 Scan the label instead</button><span class="muted small">Barcode torn, wrinkled, or will not read? Take a photo of the Nutrition Facts instead.</span></div>' +
     (S.msg ? '<p class="ai-note scan-msg-line" role="status">' + esc(S.msg) + (S.busy ? ' <button class="link" data-action="scan-stop">Stop</button>' : '') + '</p>' : '') +
     (S.photoFailed && canLabel && SCAN.lastFile ? '<div class="ai-actions"><button class="btn" data-action="scan-read-claude">Ask Claude to read the digits from the photo</button></div>' : '') +
     result + '<p style="margin:10px 0 0"><button class="link" data-action="scanbulk-toggle" aria-expanded="' + !!ui.scanBulk.open + '">' + (ui.scanBulk.open ? 'Hide' : '+ Add several barcodes at once') + '</button></p>' +
@@ -6516,6 +6601,7 @@ document.addEventListener('change', e => {
   if (t.dataset && t.dataset.rdi) { rdiSet(t.dataset.rdi, t.value); return; }
   if (t.dataset && t.dataset.wl) { wlChange(t); return; }
   if (t.dataset && t.dataset.ai) { aiChange(t); return; }
+  if (t.dataset && t.dataset.lt === 'photo') { const f = t.files && t.files[0]; try { t.value = ''; } catch (e) { /* harmless */ } ltPhoto(f); return; }
   if (t.dataset && t.dataset.lt === 'all') { if (ui.scan.form) { ui.scan.form.ltAll = !!t.checked; if (ui.scan.form.lt) labelTextApply(ui.scan.form.lt); } return; }
   if (t.dataset && t.dataset.scan) { scanChange(t); return; }
   if (t.dataset && t.dataset.scanbulk) { scanBulkChange(t); return; }
@@ -6605,7 +6691,7 @@ render();
    a backup reminder and a new-version notice are added; and a service worker lets it install and work offline.
    ============================================================ */
 const STANDALONE = true;
-const APP_VERSION = '2026.11.11-1';
+const APP_VERSION = '2026.11.11-2';
 // A real write-then-read-back test, checked before anything else. This is what the claude.ai shared copy could not
 // do for itself: it saved to localStorage without ever checking whether the save actually survived a reload, so a
 // browser that silently drops it (private browsing, storage turned off, or a link opened inside another app's
